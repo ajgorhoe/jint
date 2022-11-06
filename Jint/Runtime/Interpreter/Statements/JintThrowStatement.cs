@@ -8,7 +8,7 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintThrowStatement : JintStatement<ThrowStatement>
     {
-        private JintExpression _argument;
+        private JintExpression _argument = null!;
 
         public JintThrowStatement(ThrowStatement statement) : base(statement)
         {
@@ -16,13 +16,12 @@ namespace Jint.Runtime.Interpreter.Statements
 
         protected override void Initialize(EvaluationContext context)
         {
-            _argument = JintExpression.Build(context.Engine, _statement.Argument);
+            _argument = JintExpression.Build(_statement.Argument);
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            var jsValue = _argument.GetValue(context).Value;
-            return new Completion(CompletionType.Throw, jsValue, null, _statement.Location);
+            return new Completion(CompletionType.Throw, _argument.GetValue(context), _argument._expression);
         }
     }
 }

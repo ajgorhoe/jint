@@ -1,10 +1,14 @@
 using Jint.Native;
+using Jint.Native.AggregateError;
 using Jint.Native.Array;
 using Jint.Native.ArrayBuffer;
+using Jint.Native.AsyncFunction;
+using Jint.Native.BigInt;
 using Jint.Native.Boolean;
 using Jint.Native.DataView;
 using Jint.Native.Date;
 using Jint.Native.Error;
+using Jint.Native.FinalizationRegistry;
 using Jint.Native.Function;
 using Jint.Native.Iterator;
 using Jint.Native.Json;
@@ -17,10 +21,12 @@ using Jint.Native.Proxy;
 using Jint.Native.Reflect;
 using Jint.Native.RegExp;
 using Jint.Native.Set;
+using Jint.Native.ShadowRealm;
 using Jint.Native.String;
 using Jint.Native.Symbol;
 using Jint.Native.TypedArray;
 using Jint.Native.WeakMap;
+using Jint.Native.WeakRef;
 using Jint.Native.WeakSet;
 
 namespace Jint.Runtime
@@ -39,51 +45,59 @@ namespace Jint.Runtime
         private readonly Realm _realm;
 
         // lazy properties
-        private ErrorConstructor _error;
-        private ErrorConstructor _evalError;
-        private ErrorConstructor _rangeError;
-        private ErrorConstructor _referenceError;
-        private ErrorConstructor _syntaxError;
-        private ErrorConstructor _typeError;
-        private ErrorConstructor _uriError;
-        private WeakMapConstructor _weakMap;
-        private WeakSetConstructor _weakSet;
-        private PromiseConstructor _promise;
-        private ProxyConstructor _proxy;
-        private ReflectInstance _reflect;
-        private EvalFunctionInstance _eval;
-        private DateConstructor _date;
-        private IteratorPrototype _iteratorPrototype;
-        private MathInstance _math;
-        private JsonInstance _json;
-        private SymbolConstructor _symbol;
-        private RegExpConstructor _regExp;
-        private RegExpStringIteratorPrototype _regExpStringIteratorPrototype;
-        private NumberConstructor _number;
-        private StringConstructor _string;
-        private StringIteratorPrototype _stringIteratorPrototype;
-        private MapConstructor _map;
-        private MapIteratorPrototype _mapIteratorPrototype;
-        private SetConstructor _set;
-        private SetIteratorPrototype _setIteratorPrototype;
-        private ArrayConstructor _array;
-        private ArrayIteratorPrototype _arrayIteratorPrototype;
-        private BooleanConstructor _boolean;
-        private ArrayBufferConstructor _arrayBufferConstructor;
-        private DataViewConstructor _dataView;
+        private ThrowTypeError? _throwTypeError;
+        private AggregateErrorConstructor? _aggregateError;
+        private ErrorConstructor? _error;
+        private ErrorConstructor? _evalError;
+        private ErrorConstructor? _rangeError;
+        private ErrorConstructor? _referenceError;
+        private ErrorConstructor? _syntaxError;
+        private ErrorConstructor? _typeError;
+        private ErrorConstructor? _uriError;
+        private WeakMapConstructor? _weakMap;
+        private WeakSetConstructor? _weakSet;
+        private WeakRefConstructor? _weakRef;
+        private PromiseConstructor? _promise;
+        private ProxyConstructor? _proxy;
+        private ReflectInstance? _reflect;
+        private EvalFunctionInstance? _eval;
+        private DateConstructor? _date;
+        private IteratorPrototype? _iteratorPrototype;
+        private MathInstance? _math;
+        private JsonInstance? _json;
+        private SymbolConstructor? _symbol;
+        private RegExpConstructor? _regExp;
+        private RegExpStringIteratorPrototype? _regExpStringIteratorPrototype;
+        private NumberConstructor? _number;
+        private BigIntConstructor? _bigInt;
+        private StringConstructor? _string;
+        private StringIteratorPrototype? _stringIteratorPrototype;
+        private MapConstructor? _map;
+        private MapIteratorPrototype? _mapIteratorPrototype;
+        private SetConstructor? _set;
+        private SetIteratorPrototype? _setIteratorPrototype;
+        private ArrayConstructor? _array;
+        private ArrayIteratorPrototype? _arrayIteratorPrototype;
+        private BooleanConstructor? _boolean;
+        private ArrayBufferConstructor? _arrayBufferConstructor;
+        private DataViewConstructor? _dataView;
+        private AsyncFunctionConstructor? _asyncFunction;
+        private FinalizationRegistryConstructor? _finalizationRegistry;
 
-        private IntrinsicTypedArrayConstructor _typedArray;
-        private Int8ArrayConstructor _int8Array;
-        private Uint8ArrayConstructor _uint8Array;
-        private Uint8ClampedArrayConstructor _uint8ClampedArray;
-        private Int16ArrayConstructor _int16Array;
-        private Uint16ArrayConstructor _uint16Array;
-        private Int32ArrayConstructor _int32Array;
-        private Uint32ArrayConstructor _uint32Array;
-        private BigInt64ArrayConstructor _bigInt64Array;
-        private BigUint64ArrayConstructor _bigUint64Array;
-        private Float32ArrayConstructor _float32Array;
-        private Float64ArrayConstructor _float64Array;
+        private IntrinsicTypedArrayConstructor? _typedArray;
+        private Int8ArrayConstructor? _int8Array;
+        private Uint8ArrayConstructor? _uint8Array;
+        private Uint8ClampedArrayConstructor? _uint8ClampedArray;
+        private Int16ArrayConstructor? _int16Array;
+        private Uint16ArrayConstructor? _uint16Array;
+        private Int32ArrayConstructor? _int32Array;
+        private Uint32ArrayConstructor? _uint32Array;
+        private BigInt64ArrayConstructor? _bigInt64Array;
+        private BigUint64ArrayConstructor? _bigUint64Array;
+        private Float32ArrayConstructor? _float32Array;
+        private Float64ArrayConstructor? _float64Array;
+
+        private ShadowRealmConstructor? _shadowRealm;
 
         internal Intrinsics(Engine engine, Realm realm)
         {
@@ -104,11 +118,20 @@ namespace Jint.Runtime
         public ObjectConstructor Object { get; }
         public FunctionConstructor Function { get; }
 
+        internal FinalizationRegistryConstructor FinalizationRegistry =>
+            _finalizationRegistry ??= new FinalizationRegistryConstructor(_engine, _realm, Function, Object.PrototypeObject);
+
+        internal AsyncFunctionConstructor AsyncFunction =>
+            _asyncFunction ??= new AsyncFunctionConstructor(_engine, _realm, Function);
+
         public ArrayConstructor Array =>
             _array ??= new ArrayConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
+        internal AggregateErrorConstructor AggregateError =>
+            _aggregateError ??= new AggregateErrorConstructor(_engine, _realm, Error);
+
         internal ArrayIteratorPrototype ArrayIteratorPrototype =>
-            _arrayIteratorPrototype ??= new ArrayIteratorPrototype(_engine, _realm, Object.PrototypeObject);
+            _arrayIteratorPrototype ??= new ArrayIteratorPrototype(_engine, _realm, this.IteratorPrototype);
 
         public DataViewConstructor DataView =>
             _dataView ??= new DataViewConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
@@ -156,13 +179,13 @@ namespace Jint.Runtime
             _map ??= new MapConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         internal MapIteratorPrototype MapIteratorPrototype =>
-            _mapIteratorPrototype ??= new MapIteratorPrototype(_engine, _realm, Object.PrototypeObject);
+            _mapIteratorPrototype ??= new MapIteratorPrototype(_engine, _realm, IteratorPrototype);
 
         public SetConstructor Set =>
             _set ??= new SetConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         internal SetIteratorPrototype SetIteratorPrototype =>
-            _setIteratorPrototype ??= new SetIteratorPrototype(_engine, _realm, Object.PrototypeObject);
+            _setIteratorPrototype ??= new SetIteratorPrototype(_engine, _realm, IteratorPrototype);
 
         public WeakMapConstructor WeakMap =>
             _weakMap ??= new WeakMapConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
@@ -170,29 +193,35 @@ namespace Jint.Runtime
         public WeakSetConstructor WeakSet =>
             _weakSet ??= new WeakSetConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
+        internal WeakRefConstructor WeakRef =>
+            _weakRef ??= new WeakRefConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
+
         public PromiseConstructor Promise =>
             _promise ??= new PromiseConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         internal IteratorPrototype IteratorPrototype =>
-            _iteratorPrototype ??= new IteratorPrototype(_engine, _realm, null, Object.PrototypeObject);
+            _iteratorPrototype ??= new IteratorPrototype(_engine, _realm, Object.PrototypeObject);
 
         public StringConstructor String =>
             _string ??= new StringConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         internal StringIteratorPrototype StringIteratorPrototype =>
-            _stringIteratorPrototype ??= new StringIteratorPrototype(_engine, _realm, Object.PrototypeObject);
+            _stringIteratorPrototype ??= new StringIteratorPrototype(_engine, _realm, IteratorPrototype);
 
         public RegExpConstructor RegExp =>
             _regExp ??= new RegExpConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         internal RegExpStringIteratorPrototype RegExpStringIteratorPrototype =>
-            _regExpStringIteratorPrototype ??= new RegExpStringIteratorPrototype(_engine, _realm, Object.PrototypeObject);
+            _regExpStringIteratorPrototype ??= new RegExpStringIteratorPrototype(_engine, _realm, IteratorPrototype);
 
         public BooleanConstructor Boolean =>
             _boolean ??= new BooleanConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         public NumberConstructor Number =>
             _number ??= new NumberConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
+
+        public BigIntConstructor BigInt =>
+            _bigInt ??= new BigIntConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
         public DateConstructor Date =>
             _date ??= new DateConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
@@ -212,29 +241,34 @@ namespace Jint.Runtime
         public SymbolConstructor Symbol =>
             _symbol ??= new SymbolConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
 
+        public ShadowRealmConstructor ShadowRealm =>
+            _shadowRealm ??= new ShadowRealmConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject);
+
         public EvalFunctionInstance Eval =>
             _eval ??= new EvalFunctionInstance(_engine, _realm, Function.PrototypeObject);
 
         public ErrorConstructor Error =>
-            _error ??= new ErrorConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject, _errorFunctionName);
+            _error ??= new ErrorConstructor(_engine, _realm, Function.PrototypeObject, Object.PrototypeObject, _errorFunctionName, static intrinsics => intrinsics.Error.PrototypeObject);
 
         public ErrorConstructor EvalError =>
-            _evalError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _evalErrorFunctionName);
+            _evalError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _evalErrorFunctionName, static intrinsics => intrinsics.EvalError.PrototypeObject);
 
         public ErrorConstructor SyntaxError =>
-            _syntaxError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _syntaxErrorFunctionName);
+            _syntaxError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _syntaxErrorFunctionName, static intrinsics => intrinsics.SyntaxError.PrototypeObject);
 
         public ErrorConstructor TypeError =>
-            _typeError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _typeErrorFunctionName);
+            _typeError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _typeErrorFunctionName, static intrinsics => intrinsics.TypeError.PrototypeObject);
 
         public ErrorConstructor RangeError =>
-            _rangeError ??=
-                new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _rangeErrorFunctionName);
+            _rangeError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _rangeErrorFunctionName, static intrinsics => intrinsics.RangeError.PrototypeObject);
 
-        public ErrorConstructor ReferenceError
-            => _referenceError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _referenceErrorFunctionName);
+        public ErrorConstructor ReferenceError =>
+            _referenceError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _referenceErrorFunctionName, static intrinsics => intrinsics.ReferenceError.PrototypeObject);
 
         public ErrorConstructor UriError =>
-            _uriError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _uriErrorFunctionName);
+            _uriError ??= new ErrorConstructor(_engine, _realm, Error, Error.PrototypeObject, _uriErrorFunctionName, static intrinsics => intrinsics.UriError.PrototypeObject);
+
+        public ThrowTypeError ThrowTypeError =>
+            _throwTypeError ??= new ThrowTypeError(_engine, _engine.Realm) { _prototype = _engine.Realm.Intrinsics.Function.PrototypeObject };
     }
 }

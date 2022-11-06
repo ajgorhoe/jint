@@ -1,5 +1,3 @@
-#nullable enable
-
 using Esprima;
 using Esprima.Ast;
 using Jint.Native.Object;
@@ -25,9 +23,9 @@ namespace Jint.Native.Function
             // generate missing constructor AST only once
             static MethodDefinition CreateConstructorMethodDefinition(string source)
             {
-                var parser = new JavaScriptParser(source);
-                var script = parser.ParseScript();
-                return (MethodDefinition) script.Body[0].ChildNodes[2].ChildNodes[0];
+                var script = new JavaScriptParser().ParseScript(source);
+                var classDeclaration = (ClassDeclaration) script.Body[0];
+                return (MethodDefinition) classDeclaration.Body.Body[0];
             }
 
             _superConstructor = CreateConstructorMethodDefinition("class temp { constructor(...args) { super(...args); } }");
@@ -35,19 +33,24 @@ namespace Jint.Native.Function
         }
 
         public ClassDefinition(
-            Identifier? className,
+            string? className,
             Expression? superClass,
             ClassBody body)
         {
-            _className = className?.Name;
+            _className = className;
             _superClass = superClass;
             _body = body;
+        }
+
+        public void Initialize()
+        {
+
         }
 
         /// <summary>
         /// https://tc39.es/ecma262/#sec-runtime-semantics-classdefinitionevaluation
         /// </summary>
-        public ScriptFunctionInstance BuildConstructor(
+        public JsValue BuildConstructor(
             EvaluationContext context,
             EnvironmentRecord env)
         {
@@ -55,13 +58,25 @@ namespace Jint.Native.Function
             using var _ = new StrictModeScope(true, true);
 
             var engine = context.Engine;
-
             var classScope = JintEnvironment.NewDeclarativeEnvironment(engine, env);
 
             if (_className is not null)
             {
                 classScope.CreateImmutableBinding(_className, true);
             }
+
+            var outerPrivateEnvironment = engine.ExecutionContext.PrivateEnvironment;
+            var classPrivateEnvironment = JintEnvironment.NewPrivateEnvironment(engine, outerPrivateEnvironment);
+
+            /*
+                6. If ClassBodyopt is present, then
+                    a. For each String dn of the PrivateBoundIdentifiers of ClassBodyopt, do
+                    i. If classPrivateEnvironment.[[Names]] contains a Private Name whose [[Description]] is dn, then
+                    1. Assert: This is only possible for getter/setter pairs.
+                ii. Else,
+                    1. Let name be a new Private Name whose [[Description]] value is dn.
+                    2. Append name to classPrivateEnvironment.[[Names]].
+             */
 
             ObjectInstance? protoParent = null;
             ObjectInstance? constructorParent = null;
@@ -73,7 +88,7 @@ namespace Jint.Native.Function
             else
             {
                 engine.UpdateLexicalEnvironment(classScope);
-                var superclass = JintExpression.Build(engine, _superClass).GetValue(context).Value;
+                var superclass = JintExpression.Build(_superClass).GetValue(context);
                 engine.UpdateLexicalEnvironment(env);
 
                 if (superclass.IsNull())
@@ -81,7 +96,7 @@ namespace Jint.Native.Function
                     protoParent = null;
                     constructorParent = engine.Realm.Intrinsics.Function.PrototypeObject;
                 }
-                else if (!superclass!.IsConstructor)
+                else if (!superclass.IsConstructor)
                 {
                     ExceptionHelper.ThrowTypeError(engine.Realm, "super class is not a constructor");
                 }
@@ -92,14 +107,14 @@ namespace Jint.Native.Function
                     {
                         protoParent = protoParentObject;
                     }
-                    else if (temp._type == InternalTypes.Null)
+                    else if (temp.IsNull())
                     {
                         // OK
                     }
                     else
                     {
-                        ExceptionHelper.ThrowTypeError(engine.Realm);
-                        return null!;
+                        ExceptionHelper.ThrowTypeError(engine.Realm, "cannot resolve super class prototype chain");
+                        return default;
                     }
 
                     constructorParent = (ObjectInstance) superclass;
@@ -115,9 +130,9 @@ namespace Jint.Native.Function
             var classBody = _body.Body;
             for (var i = 0; i < classBody.Count; ++i)
             {
-                if (classBody[i].Kind == PropertyKind.Constructor)
+                if (classBody[i] is MethodDefinition { Kind: PropertyKind.Constructor } c)
                 {
-                    constructor = (MethodDefinition) classBody[i];
+                    constructor = c;
                     break;
                 }
             }
@@ -138,7 +153,7 @@ namespace Jint.Native.Function
                     F.SetFunctionName(_className);
                 }
 
-                F.MakeConstructor(false, proto);
+                F.MakeConstructor(writableProperty: false, proto);
                 F._constructorKind = _superClass is null ? ConstructorKind.Base : ConstructorKind.Derived;
                 F.MakeClassConstructor();
                 proto.CreateMethodProperty(CommonProperties.Constructor, F);
@@ -151,12 +166,17 @@ namespace Jint.Native.Function
                     }
 
                     var target = !m.Static ? proto : F;
-                    PropertyDefinitionEvaluation(engine, target, m);
+                    var value = MethodDefinitionEvaluation(engine, target, m);
+                    if (engine._activeEvaluationContext!.IsAbrupt())
+                    {
+                        return value;
+                    }
                 }
             }
             finally
             {
                 engine.UpdateLexicalEnvironment(env);
+                engine.UpdatePrivateEnvironment(outerPrivateEnvironment);
             }
 
             if (_className is not null)
@@ -164,13 +184,27 @@ namespace Jint.Native.Function
                 classScope.InitializeBinding(_className, F);
             }
 
+            /*
+            28. Set F.[[PrivateMethods]] to instancePrivateMethods.
+            29. Set F.[[Fields]] to instanceFields.
+            30. For each PrivateElement method of staticPrivateMethods, do
+                a. Perform ! PrivateMethodOrAccessorAdd(method, F).
+            31. For each element fieldRecord of staticFields, do
+                a. Let result be DefineField(F, fieldRecord).
+                b. If result is an abrupt completion, then
+            i. Set the running execution context's PrivateEnvironment to outerPrivateEnvironment.
+                ii. Return result.
+            */
+
+            engine.UpdatePrivateEnvironment(outerPrivateEnvironment);
+
             return F;
         }
 
         /// <summary>
-        /// https://tc39.es/ecma262/#sec-method-definitions-runtime-semantics-propertydefinitionevaluation
+        /// https://tc39.es/ecma262/#sec-runtime-semantics-methoddefinitionevaluation
         /// </summary>
-        private static void PropertyDefinitionEvaluation(
+        private static JsValue MethodDefinitionEvaluation(
             Engine engine,
             ObjectInstance obj,
             MethodDefinition method)
@@ -184,7 +218,12 @@ namespace Jint.Native.Function
             }
             else
             {
-                var propKey = TypeConverter.ToPropertyKey(method.GetKey(engine));
+                var value = method.TryGetKey(engine);
+                if (engine._activeEvaluationContext!.IsAbrupt())
+                {
+                    return value;
+                }
+                var propKey = TypeConverter.ToPropertyKey(value);
                 var function = method.Value as IFunction;
                 if (function is null)
                 {
@@ -207,6 +246,8 @@ namespace Jint.Native.Function
 
                 obj.DefinePropertyOrThrow(propKey, propDesc);
             }
+
+            return obj;
         }
     }
 }

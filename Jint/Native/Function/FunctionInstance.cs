@@ -1,5 +1,3 @@
-﻿using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Esprima.Ast;
 using Jint.Native.Object;
@@ -11,27 +9,28 @@ using Jint.Runtime.Interpreter;
 
 namespace Jint.Native.Function
 {
-    public abstract class FunctionInstance : ObjectInstance, ICallable
+    public abstract partial class FunctionInstance : ObjectInstance, ICallable
     {
-        protected PropertyDescriptor _prototypeDescriptor;
+        protected PropertyDescriptor? _prototypeDescriptor;
 
-        protected internal PropertyDescriptor _length;
-        private PropertyDescriptor _nameDescriptor;
+        protected internal PropertyDescriptor? _length;
+        internal PropertyDescriptor? _nameDescriptor;
 
-        protected internal EnvironmentRecord _environment;
-        internal readonly JintFunctionDefinition _functionDefinition;
+        protected internal EnvironmentRecord? _environment;
+        internal readonly JintFunctionDefinition _functionDefinition = null!;
         internal readonly FunctionThisMode _thisMode;
         internal JsValue _homeObject = Undefined;
         internal ConstructorKind _constructorKind = ConstructorKind.Base;
 
         internal Realm _realm;
-        private PrivateEnvironmentRecord _privateEnvironment;
+        internal PrivateEnvironmentRecord? _privateEnvironment;
+        private readonly IScriptOrModule? _scriptOrModule;
 
         protected FunctionInstance(
             Engine engine,
             Realm realm,
-            JsString name)
-            : this(engine, realm, name, FunctionThisMode.Global, ObjectClass.Function)
+            JsString? name)
+            : this(engine, realm, name, FunctionThisMode.Global)
         {
         }
 
@@ -44,7 +43,7 @@ namespace Jint.Native.Function
             : this(
                 engine,
                 realm,
-                !string.IsNullOrWhiteSpace(function.Name) ? new JsString(function.Name) : null,
+                !string.IsNullOrWhiteSpace(function.Name) ? new JsString(function.Name!) : null,
                 thisMode)
         {
             _functionDefinition = function;
@@ -54,7 +53,7 @@ namespace Jint.Native.Function
         internal FunctionInstance(
             Engine engine,
             Realm realm,
-            JsString name,
+            JsString? name,
             FunctionThisMode thisMode = FunctionThisMode.Global,
             ObjectClass objectClass = ObjectClass.Function)
             : base(engine, objectClass)
@@ -65,18 +64,20 @@ namespace Jint.Native.Function
             }
             _realm = realm;
             _thisMode = thisMode;
+            _scriptOrModule = _engine.GetActiveScriptOrModule();
         }
 
         // for example RavenDB wants to inspect this
         public IFunction FunctionDeclaration => _functionDefinition.Function;
 
+        internal override bool IsCallable => true;
+
+        JsValue ICallable.Call(JsValue thisObject, JsValue[] arguments) => Call(thisObject, arguments);
+
         /// <summary>
         /// Executed when a function object is used as a function
         /// </summary>
-        /// <param name="thisObject"></param>
-        /// <param name="arguments"></param>
-        /// <returns></returns>
-        public abstract JsValue Call(JsValue thisObject, JsValue[] arguments);
+        protected internal abstract JsValue Call(JsValue thisObject, JsValue[] arguments);
 
         public bool Strict => _thisMode == FunctionThisMode.Strict;
 
@@ -103,20 +104,6 @@ namespace Jint.Native.Function
             }
         }
 
-        public override List<JsValue> GetOwnPropertyKeys(Types types)
-        {
-            var keys = base.GetOwnPropertyKeys(types);
-
-            // works around a problem where we don't use property for function names and classes should report it last
-            // as it's the last operation when creating a class constructor
-            if ((types & Types.String) != 0 && _nameDescriptor != null && this is ScriptFunctionInstance { _isClassConstructor: true })
-            {
-                keys.Add(CommonProperties.Name);
-            }
-
-            return keys;
-        }
-
         internal override IEnumerable<JsValue> GetInitialOwnStringPropertyKeys()
         {
             if (_length != null)
@@ -124,9 +111,7 @@ namespace Jint.Native.Function
                 yield return CommonProperties.Length;
             }
 
-            // works around a problem where we don't use property for function names and classes should report it last
-            // as it's the last operation when creating a class constructor
-            if (_nameDescriptor != null && this is not ScriptFunctionInstance { _isClassConstructor: true })
+            if (_nameDescriptor != null)
             {
                 yield return CommonProperties.Name;
             }
@@ -175,24 +160,6 @@ namespace Jint.Native.Function
             }
         }
 
-        public override bool HasOwnProperty(JsValue property)
-        {
-            if (property == CommonProperties.Prototype)
-            {
-                return _prototypeDescriptor != null;
-            }
-            if (property == CommonProperties.Length)
-            {
-                return _length != null;
-            }
-            if (property == CommonProperties.Name)
-            {
-                return _nameDescriptor != null;
-            }
-
-            return base.HasOwnProperty(property);
-        }
-
         public override void RemoveOwnProperty(JsValue property)
         {
             if (property == CommonProperties.Prototype)
@@ -211,9 +178,12 @@ namespace Jint.Native.Function
             base.RemoveOwnProperty(property);
         }
 
-        internal void SetFunctionName(JsValue name, string prefix = null, bool force = false)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-setfunctionname
+        /// </summary>
+        internal void SetFunctionName(JsValue name, string? prefix = null, bool force = false)
         {
-            if (!force && _nameDescriptor != null && !UnwrapJsValue(_nameDescriptor).IsUndefined())
+            if (!force && _nameDescriptor != null && UnwrapJsValue(_nameDescriptor) != JsString.Empty)
             {
                 return;
             }
@@ -240,11 +210,11 @@ namespace Jint.Native.Function
         /// In spec intrinsicDefaultProto is string pointing to intrinsic, but we do a selector.
         /// </remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal T OrdinaryCreateFromConstructor<T>(
+        internal T OrdinaryCreateFromConstructor<T, TState>(
             JsValue constructor,
             Func<Intrinsics, ObjectInstance> intrinsicDefaultProto,
-            Func<Engine, Realm, JsValue, T> objectCreator,
-            JsValue state = null) where T : ObjectInstance
+            Func<Engine, Realm, TState?, T> objectCreator,
+            TState? state = default) where T : ObjectInstance
         {
             var proto = GetPrototypeFromConstructor(constructor, intrinsicDefaultProto);
 
@@ -259,8 +229,7 @@ namespace Jint.Native.Function
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal ObjectInstance GetPrototypeFromConstructor(JsValue constructor, Func<Intrinsics, ObjectInstance> intrinsicDefaultProto)
         {
-            var proto = constructor.Get(CommonProperties.Prototype, constructor) as ObjectInstance;
-            if (proto is null)
+            if (constructor.Get(CommonProperties.Prototype, constructor) is not ObjectInstance proto)
             {
                 var realm = GetFunctionRealm(constructor);
                 proto = intrinsicDefaultProto(realm.Intrinsics);
@@ -280,7 +249,7 @@ namespace Jint.Native.Function
 
             if (obj is BindFunctionInstance bindFunctionInstance)
             {
-                return GetFunctionRealm(bindFunctionInstance.TargetFunction);
+                return GetFunctionRealm(bindFunctionInstance.BoundTargetFunction);
             }
 
             if (obj is ProxyInstance proxyInstance)
@@ -296,6 +265,9 @@ namespace Jint.Native.Function
             return _engine.ExecutionContext.Realm;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-makemethod
+        /// </summary>
         internal void MakeMethod(ObjectInstance homeObject)
         {
             _homeObject = homeObject;
@@ -306,8 +278,7 @@ namespace Jint.Native.Function
         /// </summary>
         internal void OrdinaryCallBindThis(ExecutionContext calleeContext, JsValue thisArgument)
         {
-            var thisMode = _thisMode;
-            if (thisMode == FunctionThisMode.Lexical)
+            if (_thisMode == FunctionThisMode.Lexical)
             {
                 return;
             }
@@ -315,7 +286,6 @@ namespace Jint.Native.Function
             var calleeRealm = _realm;
 
             var localEnv = (FunctionEnvironmentRecord) calleeContext.LexicalEnvironment;
-
             JsValue thisValue;
             if (_thisMode == FunctionThisMode.Strict)
             {
@@ -323,7 +293,7 @@ namespace Jint.Native.Function
             }
             else
             {
-                if (thisArgument.IsNullOrUndefined())
+                if (thisArgument is null || thisArgument.IsNullOrUndefined())
                 {
                     var globalEnv = calleeRealm.GlobalEnv;
                     thisValue = globalEnv.GlobalThisValue;
@@ -337,22 +307,6 @@ namespace Jint.Native.Function
             localEnv.BindThisValue(thisValue);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal Completion OrdinaryCallEvaluateBody(
-            EvaluationContext context,
-            JsValue[] arguments,
-            ExecutionContext calleeContext)
-        {
-            var argumentsInstance = _engine.FunctionDeclarationInstantiation(
-                functionInstance: this,
-                arguments);
-
-            var result = _functionDefinition.Execute(context);
-            argumentsInstance?.FunctionWasCalled();
-
-            return result;
-        }
-
         /// <summary>
         /// https://tc39.es/ecma262/#sec-prepareforordinarycall
         /// </summary>
@@ -364,11 +318,12 @@ namespace Jint.Native.Function
             var calleeRealm = _realm;
 
             var calleeContext = new ExecutionContext(
-                localEnv,
-                localEnv,
+                _scriptOrModule,
+                lexicalEnvironment: localEnv,
+                variableEnvironment: localEnv,
                 _privateEnvironment,
                 calleeRealm,
-                this);
+                function: this);
 
             // If callerContext is not already suspended, suspend callerContext.
             // Push calleeContext onto the execution context stack; calleeContext is now the running execution context.
@@ -376,6 +331,25 @@ namespace Jint.Native.Function
             // Return calleeContext.
 
             return _engine.EnterExecutionContext(calleeContext);
+        }
+
+        internal void MakeConstructor(bool writableProperty = true, ObjectInstance? prototype = null)
+        {
+            _constructorKind = ConstructorKind.Base;
+            if (prototype is null)
+            {
+                prototype = new ObjectInstanceWithConstructor(_engine, this)
+                {
+                    _prototype = _realm.Intrinsics.Object.PrototypeObject
+                };
+            }
+
+            _prototypeDescriptor = new PropertyDescriptor(prototype, writableProperty, enumerable: false, configurable: false);
+        }
+
+        internal void SetFunctionLength(JsNumber length)
+        {
+            DefinePropertyOrThrow(CommonProperties.Length, new PropertyDescriptor(length, writable: false, enumerable: false, configurable: true));
         }
 
         public override string ToString()
@@ -388,6 +362,63 @@ namespace Jint.Native.Function
                 name = TypeConverter.ToString(nameValue);
             }
             return "function " + name + "() { [native code] }";
+        }
+
+        private sealed class ObjectInstanceWithConstructor : ObjectInstance
+        {
+            private PropertyDescriptor? _constructor;
+
+            public ObjectInstanceWithConstructor(Engine engine, ObjectInstance thisObj) : base(engine)
+            {
+                _constructor = new PropertyDescriptor(thisObj, PropertyFlag.NonEnumerable);
+            }
+
+            public override IEnumerable<KeyValuePair<JsValue, PropertyDescriptor>> GetOwnProperties()
+            {
+                if (_constructor != null)
+                {
+                    yield return new KeyValuePair<JsValue, PropertyDescriptor>(CommonProperties.Constructor, _constructor);
+                }
+
+                foreach (var entry in base.GetOwnProperties())
+                {
+                    yield return entry;
+                }
+            }
+
+            public override PropertyDescriptor GetOwnProperty(JsValue property)
+            {
+                if (property == CommonProperties.Constructor)
+                {
+                    return _constructor ?? PropertyDescriptor.Undefined;
+                }
+
+                return base.GetOwnProperty(property);
+            }
+
+            protected internal override void SetOwnProperty(JsValue property, PropertyDescriptor desc)
+            {
+                if (property == CommonProperties.Constructor)
+                {
+                    _constructor = desc;
+                }
+                else
+                {
+                    base.SetOwnProperty(property, desc);
+                }
+            }
+
+            public override void RemoveOwnProperty(JsValue property)
+            {
+                if (property == CommonProperties.Constructor)
+                {
+                    _constructor = null;
+                }
+                else
+                {
+                    base.RemoveOwnProperty(property);
+                }
+            }
         }
     }
 }

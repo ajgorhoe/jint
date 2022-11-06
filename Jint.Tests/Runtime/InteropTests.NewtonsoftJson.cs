@@ -1,10 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using Jint.Native;
 using Jint.Native.Date;
 using Jint.Runtime;
 using Newtonsoft.Json.Linq;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -105,6 +102,19 @@ namespace Jint.Tests.Runtime
             var result = fromEngine.ToString();
 
             Assert.Equal("[{\"Text\":\"Text1\",\"Value\":1},{\"Text\":\"Text2\",\"Value\":2,\"Null\":null,\"Date\":\"2015-06-25T00:00:00.000Z\"}]", result);
+        }
+        
+        [Fact]
+        public void DecimalsShouldBeHandledFromJObjects()
+        {
+            var test = JObject.FromObject(new
+            {
+                DecimalValue = 123.456m
+            });
+            _engine.SetValue("test", test);
+            var fromInterop = _engine.Evaluate("test.DecimalValue");
+            var number = Assert.IsType<JsNumber>(fromInterop);
+            Assert.Equal(123.456d, number.AsNumber());
         }
     }
 }

@@ -7,11 +7,11 @@ namespace Jint.Runtime.Interpreter.Expressions
 {
     internal sealed class JintUpdateExpression : JintExpression
     {
-        private JintExpression _argument;
+        private JintExpression _argument = null!;
         private int _change;
         private bool _prefix;
 
-        private JintIdentifierExpression _leftIdentifier;
+        private JintIdentifierExpression? _leftIdentifier;
         private bool _evalOrArguments;
 
         public JintUpdateExpression(UpdateExpression expression) : base(expression)
@@ -23,7 +23,7 @@ namespace Jint.Runtime.Interpreter.Expressions
         {
             var expression = (UpdateExpression) _expression;
             _prefix = expression.Prefix;
-            _argument = Build(context.Engine, expression.Argument);
+            _argument = Build(expression.Argument);
             if (expression.Operator == UnaryOperator.Increment)
             {
                 _change = 1;
@@ -41,19 +41,19 @@ namespace Jint.Runtime.Interpreter.Expressions
             _evalOrArguments = _leftIdentifier?.HasEvalOrArguments == true;
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
             var fastResult = _leftIdentifier != null
                 ? UpdateIdentifier(context)
                 : null;
 
-            return NormalCompletion(fastResult ?? UpdateNonIdentifier(context));
+            return fastResult ?? UpdateNonIdentifier(context);
         }
 
         private JsValue UpdateNonIdentifier(EvaluationContext context)
         {
             var engine = context.Engine;
-            var reference = _argument.Evaluate(context).Value as Reference;
+            var reference = _argument.Evaluate(context) as Reference;
             if (reference is null)
             {
                 ExceptionHelper.ThrowTypeError(engine.Realm, "Invalid left-hand side expression");
@@ -64,12 +64,12 @@ namespace Jint.Runtime.Interpreter.Expressions
             var value = engine.GetValue(reference, false);
             var isInteger = value._type == InternalTypes.Integer;
 
-            JsValue newValue = null;
+            JsValue? newValue = null;
 
             var operatorOverloaded = false;
             if (context.OperatorOverloadingAllowed)
             {
-                if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context).Value, _change > 0 ? "op_Increment" : "op_Decrement", out var result))
+                if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context), _change > 0 ? "op_Increment" : "op_Decrement", out var result))
                 {
                     operatorOverloaded = true;
                     newValue = result;
@@ -78,27 +78,50 @@ namespace Jint.Runtime.Interpreter.Expressions
 
             if (!operatorOverloaded)
             {
-                newValue = isInteger
-                    ? JsNumber.Create(value.AsInteger() + _change)
-                    : JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                if (isInteger)
+                {
+                    newValue = JsNumber.Create(value.AsInteger() + _change);
+                }
+                else if (!value.IsBigInt())
+                {
+                    newValue = JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                }
+                else
+                {
+                    newValue = JsBigInt.Create(TypeConverter.ToBigInt(value) + _change);
+                }
             }
 
-            engine.PutValue(reference, newValue);
+            engine.PutValue(reference, newValue!);
             engine._referencePool.Return(reference);
 
-            return _prefix
-                ? newValue
-                : (isInteger || operatorOverloaded ? value : JsNumber.Create(TypeConverter.ToNumber(value)));
+            if (_prefix)
+            {
+                return newValue!;
+            }
+            else
+            {
+                if (isInteger || operatorOverloaded)
+                {
+                    return value;
+                }
+
+                if (!value.IsBigInt())
+                {
+                    return JsNumber.Create(TypeConverter.ToNumber(value));
+                }
+
+                return JsBigInt.Create(value);
+            }
         }
 
-        private JsValue UpdateIdentifier(EvaluationContext context)
+        private JsValue? UpdateIdentifier(EvaluationContext context)
         {
             var strict = StrictModeScope.IsStrictModeCode;
-            var name = _leftIdentifier._expressionName;
+            var name = _leftIdentifier!.Identifier;
             var engine = context.Engine;
             var env = engine.ExecutionContext.LexicalEnvironment;
             if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
-                engine,
                 env,
                 name,
                 strict,
@@ -112,12 +135,12 @@ namespace Jint.Runtime.Interpreter.Expressions
 
                 var isInteger = value._type == InternalTypes.Integer;
 
-                JsValue newValue = null;
+                JsValue? newValue = null;
 
                 var operatorOverloaded = false;
                 if (context.OperatorOverloadingAllowed)
                 {
-                    if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context).Value, _change > 0 ? "op_Increment" : "op_Decrement", out var result))
+                    if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context), _change > 0 ? "op_Increment" : "op_Decrement", out var result))
                     {
                         operatorOverloaded = true;
                         newValue = result;
@@ -126,15 +149,32 @@ namespace Jint.Runtime.Interpreter.Expressions
 
                 if (!operatorOverloaded)
                 {
-                    newValue = isInteger
-                    ? JsNumber.Create(value.AsInteger() + _change)
-                    : JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                    if (isInteger)
+                    {
+                        newValue = JsNumber.Create(value.AsInteger() + _change);
+                    }
+                    else if (value._type != InternalTypes.BigInt)
+                    {
+                        newValue = JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                    }
+                    else
+                    {
+                        newValue = JsBigInt.Create(TypeConverter.ToBigInt(value) + _change);
+                    }
                 }
 
-                environmentRecord.SetMutableBinding(name.Key.Name, newValue, strict);
-                return _prefix
-                    ? newValue
-                    : (isInteger || operatorOverloaded ? value : JsNumber.Create(TypeConverter.ToNumber(value)));
+                environmentRecord.SetMutableBinding(name.Key.Name, newValue!, strict);
+                if (_prefix)
+                {
+                    return newValue;
+                }
+
+                if (!value.IsBigInt() && !value.IsNumber() && !operatorOverloaded)
+                {
+                    return JsNumber.Create(TypeConverter.ToNumber(value));
+                }
+
+                return value;
             }
 
             return null;

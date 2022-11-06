@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Jint.Collections;
 using Jint.Native;
@@ -12,14 +12,18 @@ namespace Jint.Runtime.Descriptors
         public static readonly PropertyDescriptor Undefined = new UndefinedPropertyDescriptor();
 
         internal PropertyFlag _flags;
-        internal JsValue _value;
+        internal JsValue? _value;
+
+        public PropertyDescriptor() : this(PropertyFlag.None)
+        {
+        }
 
         protected PropertyDescriptor(PropertyFlag flags)
         {
             _flags = flags;
         }
 
-        protected internal PropertyDescriptor(JsValue value, PropertyFlag flags) : this(flags)
+        protected internal PropertyDescriptor(JsValue? value, PropertyFlag flags) : this(flags)
         {
             if ((_flags & PropertyFlag.CustomJsValue) != 0)
             {
@@ -28,7 +32,7 @@ namespace Jint.Runtime.Descriptors
             _value = value;
         }
 
-        public PropertyDescriptor(JsValue value, bool? writable, bool? enumerable, bool? configurable)
+        public PropertyDescriptor(JsValue? value, bool? writable, bool? enumerable, bool? configurable)
         {
             if ((_flags & PropertyFlag.CustomJsValue) != 0)
             {
@@ -69,8 +73,8 @@ namespace Jint.Runtime.Descriptors
             WritableSet = descriptor.WritableSet;
         }
 
-        public virtual JsValue Get => null;
-        public virtual JsValue Set => null;
+        public virtual JsValue? Get => null;
+        public virtual JsValue? Set => null;
 
         public bool Enumerable
         {
@@ -190,10 +194,10 @@ namespace Jint.Runtime.Descriptors
             {
                 if ((_flags & PropertyFlag.CustomJsValue) != 0)
                 {
-                    return CustomValue;
+                    return CustomValue!;
                 }
 
-                return _value;
+                return _value!;
             }
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             set
@@ -206,7 +210,7 @@ namespace Jint.Runtime.Descriptors
             }
         }
 
-        protected internal virtual JsValue CustomValue
+        protected internal virtual JsValue? CustomValue
         {
             get => null;
             set => ExceptionHelper.ThrowNotImplementedException();
@@ -215,93 +219,126 @@ namespace Jint.Runtime.Descriptors
         internal PropertyFlag Flags
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get { return _flags; }
+            get => _flags;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-topropertydescriptor
+        /// </summary>
         public static PropertyDescriptor ToPropertyDescriptor(Realm realm, JsValue o)
         {
-            var obj = o.TryCast<ObjectInstance>();
-            if (ReferenceEquals(obj, null))
+            if (o is not ObjectInstance obj)
             {
                 ExceptionHelper.ThrowTypeError(realm);
+                return null;
             }
 
-            var getProperty = obj.GetProperty(CommonProperties.Get);
-            var hasGetProperty = getProperty != Undefined;
-            var setProperty = obj.GetProperty(CommonProperties.Set);
-            var hasSetProperty = setProperty != Undefined;
-
-            if ((obj.HasProperty(CommonProperties.Value) || obj.HasProperty(CommonProperties.Writable)) &&
-                (hasGetProperty || hasSetProperty))
+            bool? enumerable = null;
+            var hasEnumerable = obj.HasProperty(CommonProperties.Enumerable);
+            if (hasEnumerable)
             {
-                ExceptionHelper.ThrowTypeError(realm);
+                enumerable = TypeConverter.ToBoolean(obj.Get(CommonProperties.Enumerable));
             }
 
-            var desc = hasGetProperty || hasSetProperty
+            bool? configurable = null;
+            var hasConfigurable = obj.HasProperty(CommonProperties.Configurable);
+            if (hasConfigurable)
+            {
+                configurable = TypeConverter.ToBoolean(obj.Get(CommonProperties.Configurable));
+            }
+
+            JsValue? value = null;
+            var hasValue = obj.HasProperty(CommonProperties.Value);
+            if (hasValue)
+            {
+                value = obj.Get(CommonProperties.Value);
+            }
+
+            bool? writable = null;
+            var hasWritable = obj.HasProperty(CommonProperties.Writable);
+            if (hasWritable)
+            {
+                writable = TypeConverter.ToBoolean(obj.Get(CommonProperties.Writable));
+            }
+
+            JsValue? get = null;
+            var hasGet = obj.HasProperty(CommonProperties.Get);
+            if (hasGet)
+            {
+                get = obj.Get(CommonProperties.Get);
+            }
+
+            JsValue? set = null;
+            var hasSet = obj.HasProperty(CommonProperties.Set);
+            if (hasSet)
+            {
+                set = obj.Get(CommonProperties.Set);
+            }
+
+            if ((hasValue || hasWritable) && (hasGet || hasSet))
+            {
+                ExceptionHelper.ThrowTypeError(realm, "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute");
+            }
+
+            var desc = hasGet || hasSet
                 ? new GetSetPropertyDescriptor(null, null, PropertyFlag.None)
                 : new PropertyDescriptor(PropertyFlag.None);
 
-            var enumerableProperty = obj.GetProperty(CommonProperties.Enumerable);
-            if (enumerableProperty != Undefined)
+            if (hasEnumerable)
             {
-                desc.Enumerable = TypeConverter.ToBoolean(obj.UnwrapJsValue(enumerableProperty));
+                desc.Enumerable = enumerable!.Value;
                 desc.EnumerableSet = true;
             }
 
-            var configurableProperty = obj.GetProperty(CommonProperties.Configurable);
-            if (configurableProperty != Undefined)
+            if (hasConfigurable)
             {
-                desc.Configurable = TypeConverter.ToBoolean(obj.UnwrapJsValue(configurableProperty));
+                desc.Configurable = configurable!.Value;
                 desc.ConfigurableSet = true;
             }
 
-            var valueProperty = obj.GetProperty(CommonProperties.Value);
-            if (valueProperty != Undefined)
+            if (hasValue)
             {
-                desc.Value = obj.UnwrapJsValue(valueProperty);
+                desc.Value = value!;
             }
 
-            var writableProperty = obj.GetProperty(CommonProperties.Writable);
-            if (writableProperty != Undefined)
+            if (hasWritable)
             {
-                desc.Writable = TypeConverter.ToBoolean(obj.UnwrapJsValue(writableProperty));
+                desc.Writable = TypeConverter.ToBoolean(writable!.Value);
                 desc.WritableSet = true;
             }
 
-            if (hasGetProperty)
+            if (hasGet)
             {
-                var getter = obj.UnwrapJsValue(getProperty);
-                if (!getter.IsUndefined() && getter.TryCast<ICallable>() == null)
+                if (!get!.IsUndefined() && get!.TryCast<ICallable>() == null)
                 {
                     ExceptionHelper.ThrowTypeError(realm);
                 }
 
-                ((GetSetPropertyDescriptor) desc).SetGet(getter);
+                ((GetSetPropertyDescriptor) desc).SetGet(get!);
             }
 
-            if (hasSetProperty)
+            if (hasSet)
             {
-                var setter = obj.UnwrapJsValue(setProperty);
-                if (!setter.IsUndefined() && setter.TryCast<ICallable>() == null)
+                if (!set!.IsUndefined() && set!.TryCast<ICallable>() is null)
                 {
                     ExceptionHelper.ThrowTypeError(realm);
                 }
 
-                ((GetSetPropertyDescriptor) desc).SetSet(setter);
+                ((GetSetPropertyDescriptor) desc).SetSet(set!);
             }
 
-            if (!ReferenceEquals(desc.Get, null))
+            if ((hasSet || hasGet) && (hasValue || hasWritable))
             {
-                if (!ReferenceEquals(desc.Value, null) || desc.WritableSet)
-                {
-                    ExceptionHelper.ThrowTypeError(realm);
-                }
+                ExceptionHelper.ThrowTypeError(realm);
             }
 
             return desc;
         }
 
-        public static JsValue FromPropertyDescriptor(Engine engine, PropertyDescriptor desc)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-frompropertydescriptor
+        /// </summary>
+        public static JsValue FromPropertyDescriptor(Engine engine, PropertyDescriptor desc, bool strictUndefined = false)
         {
             if (ReferenceEquals(desc, Undefined))
             {
@@ -311,10 +348,17 @@ namespace Jint.Runtime.Descriptors
             var obj = engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
             var properties = new PropertyDictionary(4, checkExistingKeys: false);
 
+            // TODO should not check for strictUndefined, but needs a bigger cleanup
+            // we should have possibility to leave out the properties in property descriptors as newer tests
+            // also assert properties to be undefined
+
             if (desc.IsDataDescriptor())
             {
                 properties["value"] =  new PropertyDescriptor(desc.Value ?? Native.Undefined.Instance, PropertyFlag.ConfigurableEnumerableWritable);
-                properties["writable"] = new PropertyDescriptor(desc.Writable, PropertyFlag.ConfigurableEnumerableWritable);
+                if (desc._flags != PropertyFlag.None || desc.WritableSet)
+                {
+                    properties["writable"] = new PropertyDescriptor(desc.Writable, PropertyFlag.ConfigurableEnumerableWritable);
+                }
             }
             else
             {
@@ -322,8 +366,15 @@ namespace Jint.Runtime.Descriptors
                 properties["set"] = new PropertyDescriptor(desc.Set ?? Native.Undefined.Instance, PropertyFlag.ConfigurableEnumerableWritable);
             }
 
-            properties["enumerable"] = new PropertyDescriptor(desc.Enumerable, PropertyFlag.ConfigurableEnumerableWritable);
-            properties["configurable"] = new PropertyDescriptor(desc.Configurable, PropertyFlag.ConfigurableEnumerableWritable);
+            if (!strictUndefined || desc.EnumerableSet)
+            {
+                properties["enumerable"] = new PropertyDescriptor(desc.Enumerable, PropertyFlag.ConfigurableEnumerableWritable);
+            }
+
+            if (!strictUndefined || desc.ConfigurableSet)
+            {
+                properties["configurable"] = new PropertyDescriptor(desc.Configurable, PropertyFlag.ConfigurableEnumerableWritable);
+            }
 
             obj.SetProperties(properties);
             return obj;
@@ -381,7 +432,7 @@ namespace Jint.Runtime.Descriptors
             if (!ReferenceEquals(getter, null) && !getter.IsUndefined())
             {
                 // if getter is not undefined it must be ICallable
-                var callable = getter.TryCast<ICallable>();
+                var callable = (ICallable) getter;
                 value = callable.Call(thisArg, Arguments.Empty);
             }
 
@@ -394,7 +445,7 @@ namespace Jint.Runtime.Descriptors
             {
             }
 
-            protected internal override JsValue CustomValue
+            protected internal override JsValue? CustomValue
             {
                 set => ExceptionHelper.ThrowInvalidOperationException("making changes to undefined property's descriptor is not allowed");
             }

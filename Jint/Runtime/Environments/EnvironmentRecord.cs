@@ -1,6 +1,5 @@
-﻿#nullable enable
-
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Jint.Native;
 
 namespace Jint.Runtime.Environments
@@ -26,11 +25,13 @@ namespace Jint.Runtime.Environments
         /// <returns><c>true</c> if it does and <c>false</c> if it does not.</returns>
         public abstract bool HasBinding(string name);
 
+        internal abstract bool HasBinding(BindingName name);
+
         internal abstract bool TryGetBinding(
-            in BindingName name,
+            BindingName name,
             bool strict,
             out Binding binding,
-            out JsValue value);
+            [NotNullWhen(true)] out JsValue? value);
 
         /// <summary>
         /// Creates a new mutable binding in an environment record.
@@ -61,7 +62,7 @@ namespace Jint.Runtime.Environments
         /// <param name="strict">The identify strict mode references.</param>
         public abstract void SetMutableBinding(string name, JsValue value, bool strict);
 
-        internal abstract void SetMutableBinding(in BindingName name, JsValue value, bool strict);
+        internal abstract void SetMutableBinding(BindingName name, JsValue value, bool strict);
 
         /// <summary>
         /// Returns the value of an already existing binding from an environment record.
@@ -70,6 +71,17 @@ namespace Jint.Runtime.Environments
         /// <param name="strict">The identify strict mode references.</param>
         /// <return>The value of an already existing binding from an environment record.</return>
         public abstract JsValue GetBindingValue(string name, bool strict);
+
+        /// <summary>
+        /// Returns the value of an already existing binding from an environment record. Unlike <see cref="GetBindingValue(string, bool)"/>
+        /// this does not throw an exception for uninitialized bindings, but instead returns false and sets <paramref name="value"/> to null.
+        /// </summary>
+        /// <param name="name">The identifier of the binding</param>
+        /// <param name="strict">Strict mode</param>
+        /// <param name="value">The value of an already existing binding from an environment record.</param>
+        /// <returns>True if the value is initialized, otherwise false.</returns>
+        /// <remarks>This is used for debugger inspection. Note that this will currently still throw if the binding cannot be retrieved (e.g. because it doesn't exist).</remarks>
+        internal abstract bool TryGetBindingValue(string name, bool strict, [NotNullWhen(true)] out JsValue? value);
 
         /// <summary>
         /// Delete a binding from an environment record. The String value N is the text of the bound name If a binding for N exists, remove the binding and return true. If the binding exists but cannot be removed return false. If the binding does not exist return true.
@@ -96,7 +108,7 @@ namespace Jint.Runtime.Environments
             return null;
         }
 
-        public override bool Equals(JsValue other)
+        public override bool Equals(JsValue? other)
         {
             ExceptionHelper.ThrowNotSupportedException();
             return false;
@@ -110,15 +122,23 @@ namespace Jint.Runtime.Environments
         /// Helper to cache JsString/Key when environments use different lookups.
         /// </summary>
         [DebuggerDisplay("\"{Key.Name}\"")]
-        internal readonly struct BindingName
+        internal sealed class BindingName
         {
             public readonly Key Key;
             public readonly JsString StringValue;
+            public readonly bool HasEvalOrArguments;
+            public readonly JsValue? CalculatedValue;
 
             public BindingName(string value)
             {
-                Key = (Key) value;
+                var key = (Key) value;
+                Key = key;
                 StringValue = JsString.Create(value);
+                HasEvalOrArguments = key == KnownKeys.Eval || key == KnownKeys.Arguments;
+                if (key == KnownKeys.Undefined)
+                {
+                    CalculatedValue = Undefined;
+                }
             }
         }
     }

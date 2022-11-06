@@ -1,8 +1,6 @@
 ﻿using Jint.Native;
-using System;
 using System.Dynamic;
 using Jint.Runtime.Interop;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -99,6 +97,23 @@ namespace Jint.Tests.Runtime
             Assert.Equal("Class2.Double[]", engine.Evaluate("Class2.Print([ 1, 2 ]); "));
             Assert.Equal("Class2.ExpandoObject", engine.Evaluate("Class2.Print({ x: 1, y: 2 });"));
             Assert.Equal("Class2.Int32", engine.Evaluate("Class2.Print(5);"));
+            Assert.Equal("Class2.Object", engine.Evaluate("Class2.Print(() => '');"));
+        }
+
+        [Fact]
+        public void ShouldMatchCorrectConstructors()
+        {
+            Engine engine = new Engine();
+            engine.SetValue("MyClass", TypeReference.CreateTypeReference(engine, typeof(Class3)));
+
+            engine.Execute(@"
+                const a = new MyClass();
+                a.Print(1); // Works
+                a.Print([1, 2]); // Works
+
+                const b = new MyClass(1); // Works
+                const c = new MyClass([1, 2]); // Throws 'an object must implement IConvertible' exception
+			");
         }
 
         private struct Class1
@@ -114,6 +129,19 @@ namespace Jint.Tests.Runtime
             public static string Print(double[] a) => nameof(Class2) + "." + nameof(Double) + "[]";
             public static string Print(int i) => nameof(Class2) + "." + nameof(Int32);
             public static string Print(object o) => nameof(Class2) + "." + nameof(Object);
+        }
+
+        public class Class3
+        {
+            public Class3() { }
+
+            public Class3(int a) => Console.WriteLine("Class1(int a): " + a);
+
+            public Class3(object a) => Console.WriteLine("Class1(object a): " + a);
+
+            public void Print(int a) => Console.WriteLine("Print(int a): " + a);
+
+            public void Print(object a) => Console.WriteLine("Print(object a): " + a);
         }
     }
 }

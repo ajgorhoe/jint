@@ -1,10 +1,5 @@
-﻿#nullable enable
-
-using System;
-using System.Collections.Generic;
-using System.Dynamic;
+﻿using System.Dynamic;
 using System.Globalization;
-using System.Linq;
 using System.Reflection;
 using Jint.Native;
 using Jint.Native.Object;
@@ -12,6 +7,7 @@ using Jint.Runtime;
 using Jint.Runtime.Interop;
 using Jint.Runtime.Debugger;
 using Jint.Runtime.Descriptors;
+using Jint.Runtime.Modules;
 
 namespace Jint
 {
@@ -44,6 +40,11 @@ namespace Jint
         /// Host options.
         /// </summary>
         internal HostOptions Host { get; } = new();
+
+        /// <summary>
+        /// Module options
+        /// </summary>
+        public ModuleOptions Modules { get; } = new();
 
         /// <summary>
         /// Whether the code should be always considered to be in strict mode. Can improve performance.
@@ -96,6 +97,22 @@ namespace Jint
             {
                 AttachExtensionMethodsToPrototypes(engine);
             }
+
+            if (Modules.RegisterRequire)
+            {
+                // Node js like loading of modules
+                engine.Realm.GlobalObject.SetProperty("require", new PropertyDescriptor(new ClrFunctionInstance(
+                        engine,
+                        "require",
+                        (thisObj, arguments) =>
+                        {
+                            var specifier = TypeConverter.ToString(arguments.At(0));
+                            return engine.ImportModule(specifier);
+                        }),
+                    PropertyFlag.AllForbidden));
+            }
+
+            engine.ModuleLoader = Modules.ModuleLoader;
 
             // ensure defaults
             engine.ClrTypeConverter ??= new DefaultTypeConverter(engine);
@@ -178,6 +195,11 @@ namespace Jint
         /// Configures the statement handling strategy, defaults to Ignore.
         /// </summary>
         public DebuggerStatementHandling StatementHandling { get; set; } = DebuggerStatementHandling.Ignore;
+
+        /// <summary>
+        /// Configures the step mode used when entering the script.
+        /// </summary>
+        public StepMode InitialStepMode { get; set; } = StepMode.None;
     }
 
     public class InteropOptions
@@ -220,16 +242,25 @@ namespace Jint
         public List<IObjectConverter> ObjectConverters { get; } = new();
 
         /// <summary>
+        /// Whether identity map is persisted for object wrappers in order to maintain object identity.
+        /// Defaults to true.
+        /// </summary>
+        public bool TrackObjectWrapperIdentity { get; set; } = true;
+
+        /// <summary>
         /// If no known type could be guessed, objects are by default wrapped as an
         /// ObjectInstance using class ObjectWrapper. This function can be used to
         /// change the behavior.
         /// </summary>
-        public WrapObjectDelegate WrapObjectHandler { get; set; } = (engine, target) => new ObjectWrapper(engine, target);
+        public WrapObjectDelegate WrapObjectHandler { get; set; } = static (engine, target) =>
+        {
+            return new ObjectWrapper(engine, target);
+        };
 
         /// <summary>
         ///
         /// </summary>
-        public MemberAccessorDelegate MemberAccessor { get; set; } = (engine, target, member) => null;
+        public MemberAccessorDelegate MemberAccessor { get; set; } = static (engine, target, member) => null;
 
         /// <summary>
         /// Exceptions that thrown from CLR code are converted to JavaScript errors and
@@ -237,7 +268,7 @@ namespace Jint
         /// to the CLR host and interrupt the script execution. If handler returns true these exceptions are converted
         /// to JS errors that can be caught by the script.
         /// </summary>
-        public ExceptionHandlerDelegate ExceptionHandler { get; set; } = exception => false;
+        public ExceptionHandlerDelegate ExceptionHandler { get; set; } = static exception => false;
 
         /// <summary>
         /// Assemblies to allow scripts to call CLR types directly like <example>System.IO.File</example>.
@@ -258,6 +289,17 @@ namespace Jint
         /// Defaults to only coercing to string values when writing to string targets.
         /// </summary>
         public ValueCoercionType ValueCoercion { get; set; } = ValueCoercionType.String;
+
+        /// <summary>
+        /// Strategy to create a CLR object to hold converted <see cref="ObjectInstance"/>.
+        /// </summary>
+        public Func<ObjectInstance, IDictionary<string, object>> CreateClrObject = _ => new ExpandoObject();
+
+        /// <summary>
+        /// When not null, is used to serialize any CLR object in an
+        /// <see cref="IObjectWrapper"/> passing through 'JSON.stringify'.
+        /// </summary>
+        public Func<object, string>? SerializeToJson { get; set; }
     }
 
     /// <summary>
@@ -298,7 +340,7 @@ namespace Jint
         /// <summary>
         /// Registered constraints.
         /// </summary>
-        public List<IConstraint> Constraints { get; } = new();
+        public List<Constraint> Constraints { get; } = new();
 
         /// <summary>
         /// Maximum recursion depth allowed, defaults to -1 (no checks).
@@ -322,5 +364,21 @@ namespace Jint
     public class HostOptions
     {
         internal Func<Engine, Host> Factory { get; set; } = _ => new Host();
+    }
+
+    /// <summary>
+    /// Module related customization
+    /// </summary>
+    public class ModuleOptions
+    {
+        /// <summary>
+        /// Whether to register require function to engine which will delegate to module loader, defaults to false.
+        /// </summary>
+        public bool RegisterRequire { get; set; }
+
+        /// <summary>
+        /// Module loader implementation, by default exception will be thrown if module loading is not enabled.
+        /// </summary>
+        public IModuleLoader ModuleLoader { get; set; } = FailFastModuleLoader.Instance;
     }
 }

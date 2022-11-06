@@ -7,7 +7,7 @@ namespace Jint.Runtime.Interpreter.Expressions
     internal sealed class JintTemplateLiteralExpression : JintExpression
     {
         internal readonly TemplateLiteral _templateLiteralExpression;
-        internal JintExpression[] _expressions;
+        internal JintExpression[] _expressions = Array.Empty<JintExpression>();
 
         public JintTemplateLiteralExpression(TemplateLiteral expression) : base(expression)
         {
@@ -17,17 +17,16 @@ namespace Jint.Runtime.Interpreter.Expressions
 
         protected override void Initialize(EvaluationContext context)
         {
-            DoInitialize(context);
+            DoInitialize();
         }
 
-        internal void DoInitialize(EvaluationContext context)
+        internal void DoInitialize()
         {
-            var engine = context.Engine;
             _expressions = new JintExpression[_templateLiteralExpression.Expressions.Count];
             for (var i = 0; i < _templateLiteralExpression.Expressions.Count; i++)
             {
                 var exp = _templateLiteralExpression.Expressions[i];
-                _expressions[i] = Build(engine, exp);
+                _expressions[i] = Build(exp);
             }
 
             _initialized = true;
@@ -43,16 +42,16 @@ namespace Jint.Runtime.Interpreter.Expressions
                 if (i < _expressions.Length)
                 {
                     var completion = _expressions[i].GetValue(context);
-                    sb.Builder.Append(completion.Value);
+                    sb.Builder.Append(completion);
                 }
             }
 
             return JsString.Create(sb.ToString());
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            return NormalCompletion(BuildString(context));
+            return BuildString(context);
         }
     }
 }

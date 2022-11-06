@@ -9,8 +9,8 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintWithStatement : JintStatement<WithStatement>
     {
-        private JintStatement _body;
-        private JintExpression _object;
+        private ProbablyBlockStatement _body;
+        private JintExpression _object = null!;
 
         public JintWithStatement(WithStatement statement) : base(statement)
         {
@@ -18,13 +18,13 @@ namespace Jint.Runtime.Interpreter.Statements
 
         protected override void Initialize(EvaluationContext context)
         {
-            _body = Build(_statement.Body);
-            _object = JintExpression.Build(context.Engine, _statement.Object);
+            _body = new ProbablyBlockStatement(_statement.Body);
+            _object = JintExpression.Build(_statement.Object);
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            var jsValue = _object.GetValue(context).Value;
+            var jsValue = _object.GetValue(context);
             var engine = context.Engine;
             var obj = TypeConverter.ToObject(engine.Realm, jsValue);
             var oldEnv = engine.ExecutionContext.LexicalEnvironment;
@@ -38,7 +38,7 @@ namespace Jint.Runtime.Interpreter.Statements
             }
             catch (JavaScriptException e)
             {
-                c = new Completion(CompletionType.Throw, e.Error, _statement.Location);
+                c = new Completion(CompletionType.Throw, e.Error, _statement);
             }
             finally
             {

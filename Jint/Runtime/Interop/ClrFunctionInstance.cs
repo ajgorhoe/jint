@@ -1,4 +1,4 @@
-﻿using System;
+using System.Runtime.ExceptionServices;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Runtime.Descriptors;
@@ -10,7 +10,7 @@ namespace Jint.Runtime.Interop
     /// </summary>
     public sealed class ClrFunctionInstance : FunctionInstance, IEquatable<ClrFunctionInstance>
     {
-        private readonly string _name;
+        private readonly string? _name;
         internal readonly Func<JsValue, JsValue[], JsValue> _func;
 
         public ClrFunctionInstance(
@@ -31,24 +31,33 @@ namespace Jint.Runtime.Interop
                 : new PropertyDescriptor(JsNumber.Create(length), lengthFlags);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments) => _func(thisObject, arguments);
-
-        public override bool Equals(JsValue obj)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
-            if (ReferenceEquals(null, obj))
+            try
             {
-                return false;
+                return _func(thisObject, arguments);
             }
-
-            if (!(obj is ClrFunctionInstance s))
+            catch (Exception exc)
             {
-                return false;
-            }
+                if (_engine.Options.Interop.ExceptionHandler(exc))
+                {
+                    ExceptionHelper.ThrowJavaScriptException(_realm.Intrinsics.Error, exc.Message);
+                }
+                else
+                {
+                    ExceptionDispatchInfo.Capture(exc).Throw();
+                }
 
-            return Equals(s);
+                return Undefined;
+            }
         }
 
-        public bool Equals(ClrFunctionInstance other)
+        public override bool Equals(JsValue? obj)
+        {
+            return Equals(obj as ClrFunctionInstance);
+        }
+
+        public bool Equals(ClrFunctionInstance? other)
         {
             if (ReferenceEquals(null, other))
             {

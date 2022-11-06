@@ -10,20 +10,20 @@ namespace Jint.Runtime.Interpreter.Expressions
     /// </summary>
     internal sealed class JintMemberExpression : JintExpression
     {
-        private MemberExpression _memberExpression;
-        private JintExpression _objectExpression;
-        private JintExpression _propertyExpression;
-        private JsValue _determinedProperty;
+        private readonly MemberExpression _memberExpression;
+        private JintExpression _objectExpression = null!;
+        private JintExpression? _propertyExpression;
+        private JsValue? _determinedProperty;
 
         public JintMemberExpression(MemberExpression expression) : base(expression)
         {
             _initialized = false;
+            _memberExpression = (MemberExpression) _expression;
         }
 
         protected override void Initialize(EvaluationContext context)
         {
-            _memberExpression = (MemberExpression) _expression;
-            _objectExpression = Build(context.Engine, _memberExpression.Object);
+            _objectExpression = Build(_memberExpression.Object);
 
             if (!_memberExpression.Computed)
             {
@@ -36,34 +36,33 @@ namespace Jint.Runtime.Interpreter.Expressions
 
             if (_determinedProperty is null)
             {
-                _propertyExpression = Build(context.Engine, _memberExpression.Property);
+                _propertyExpression = Build(_memberExpression.Property);
             }
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            JsValue actualThis = null;
-            string baseReferenceName = null;
-            JsValue baseValue = null;
+            JsValue? actualThis = null;
+            string? baseReferenceName = null;
+            JsValue? baseValue = null;
             var isStrictModeCode = StrictModeScope.IsStrictModeCode;
 
             var engine = context.Engine;
             if (_objectExpression is JintIdentifierExpression identifierExpression)
             {
-                baseReferenceName = identifierExpression._expressionName.Key.Name;
+                baseReferenceName = identifierExpression.Identifier.Key.Name;
                 var strict = isStrictModeCode;
                 var env = engine.ExecutionContext.LexicalEnvironment;
                 JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
-                    engine,
                     env,
-                    identifierExpression._expressionName,
+                    identifierExpression.Identifier,
                     strict,
                     out _,
                     out baseValue);
             }
             else if (_objectExpression is JintThisExpression thisExpression)
             {
-                baseValue = thisExpression.GetValue(context).Value;
+                baseValue = (JsValue?) thisExpression.GetValue(context);
             }
             else if (_objectExpression is JintSuperExpression)
             {
@@ -75,10 +74,10 @@ namespace Jint.Runtime.Interpreter.Expressions
             if (baseValue is null)
             {
                 // fast checks failed
-                var baseReference = _objectExpression.Evaluate(context).Value;
+                var baseReference = _objectExpression.Evaluate(context);
                 if (ReferenceEquals(Undefined.Instance, baseReference))
                 {
-                    return NormalCompletion(Undefined.Instance);
+                    return Undefined.Instance;
                 }
                 if (baseReference is Reference reference)
                 {
@@ -94,10 +93,10 @@ namespace Jint.Runtime.Interpreter.Expressions
 
             if (baseValue.IsNullOrUndefined() && (_memberExpression.Optional || _objectExpression._expression.IsOptional()))
             {
-                return NormalCompletion(Undefined.Instance);
+                return Undefined.Instance;
             }
 
-            var property = _determinedProperty ?? _propertyExpression.GetValue(context).Value;
+            var property = _determinedProperty ?? _propertyExpression!.GetValue(context);
             if (baseValue.IsNullOrUndefined())
             {
                 // we can use base data types securely, object evaluation can mess things up
@@ -105,7 +104,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                     ? TypeConverter.ToString(property)
                     : _determinedProperty?.ToString() ?? baseReferenceName;
 
-                TypeConverter.CheckObjectCoercible(engine, baseValue, _memberExpression.Property, referenceName);
+                TypeConverter.CheckObjectCoercible(engine, baseValue, _memberExpression.Property, referenceName!);
             }
 
             // only convert if necessary
@@ -113,11 +112,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                 ? property
                 : TypeConverter.ToPropertyKey(property);
 
-            var rent = context.Engine._referencePool.Rent(baseValue, propertyKey, isStrictModeCode, thisValue: actualThis);
-            return new ExpressionResult(
-                ExpressionCompletionType.Reference,
-                rent,
-                _expression.Location);
+            return context.Engine._referencePool.Rent(baseValue, propertyKey, isStrictModeCode, thisValue: actualThis);
         }
     }
 }

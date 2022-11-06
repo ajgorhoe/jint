@@ -1,4 +1,4 @@
-﻿using Jint.Collections;
+using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -9,7 +9,7 @@ using Jint.Runtime.Interop;
 namespace Jint.Native.Function
 {
     /// <summary>
-    ///     http://www.ecma-international.org/ecma-262/5.1/#sec-15.3.4
+    /// https://tc39.es/ecma262/#sec-properties-of-the-function-prototype-object
     /// </summary>
     public sealed class FunctionPrototype : FunctionInstance
     {
@@ -20,7 +20,7 @@ namespace Jint.Native.Function
             : base(engine, realm, JsString.Empty)
         {
             _prototype = objectPrototype;
-            _length = PropertyDescriptor.AllForbiddenDescriptor.NumberZero;
+            _length = new PropertyDescriptor(JsNumber.PositiveZero, PropertyFlag.Configurable);
         }
 
         protected override void Initialize()
@@ -30,12 +30,12 @@ namespace Jint.Native.Function
             var properties = new PropertyDictionary(7, checkExistingKeys: false)
             {
                 ["constructor"] = new PropertyDescriptor(_realm.Intrinsics.Function, PropertyFlag.NonEnumerable),
-                ["toString"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "toString", ToString, 0, lengthFlags), propertyFlags),
-                ["apply"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "apply", Apply, 2, lengthFlags), propertyFlags),
-                ["call"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "call", CallImpl, 1, lengthFlags), propertyFlags),
-                ["bind"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "bind", Bind, 1, PropertyFlag.AllForbidden), propertyFlags),
-                ["arguments"] = _engine._callerCalleeArgumentsThrowerConfigurable,
-                ["caller"] = _engine._callerCalleeArgumentsThrowerConfigurable
+                ["toString"] = new PropertyDescriptor(new ClrFunctionInstance(_engine, "toString", ToString, 0, lengthFlags), propertyFlags),
+                ["apply"] = new PropertyDescriptor(new ClrFunctionInstance(_engine, "apply", Apply, 2, lengthFlags), propertyFlags),
+                ["call"] = new PropertyDescriptor(new ClrFunctionInstance(_engine, "call", CallImpl, 1, lengthFlags), propertyFlags),
+                ["bind"] = new PropertyDescriptor(new ClrFunctionInstance(_engine, "bind", Bind, 1, lengthFlags), propertyFlags),
+                ["arguments"] = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(_engine, PropertyFlag.Configurable | PropertyFlag.CustomJsValue),
+                ["caller"] = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(_engine, PropertyFlag.Configurable | PropertyFlag.CustomJsValue)
             };
             SetProperties(properties);
 
@@ -46,41 +46,54 @@ namespace Jint.Native.Function
             SetSymbols(symbols);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-function.prototype-@@hasinstance
+        /// </summary>
         private static JsValue HasInstance(JsValue thisObj, JsValue[] arguments)
         {
-            if (thisObj is not FunctionInstance f)
-            {
-                return false;
-            }
-
-            return f.OrdinaryHasInstance(arguments.At(0));
+            return thisObj.OrdinaryHasInstance(arguments.At(0));
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-function.prototype.bind
+        /// </summary>
         private JsValue Bind(JsValue thisObj, JsValue[] arguments)
         {
-            if (thisObj is not ICallable)
+            if (thisObj is not (ICallable and ObjectInstance oi))
             {
                 ExceptionHelper.ThrowTypeError(_realm, "Bind must be called on a function");
+                return default;
             }
 
             var thisArg = arguments.At(0);
-            var f = BoundFunctionCreate((ObjectInstance) thisObj, thisArg, arguments.Skip(1));
+            var f = BoundFunctionCreate(oi, thisArg, arguments.Skip(1));
 
             JsNumber l;
-            var targetHasLength = thisObj.HasOwnProperty(CommonProperties.Length);
+            var targetHasLength = oi.HasOwnProperty(CommonProperties.Length) == true;
             if (targetHasLength)
             {
-                var targetLen = thisObj.Get(CommonProperties.Length);
-                if (!targetLen.IsNumber())
+                var targetLen = oi.Get(CommonProperties.Length);
+                if (targetLen is not JsNumber number)
                 {
                     l = JsNumber.PositiveZero;
                 }
                 else
                 {
-                    targetLen = TypeConverter.ToInteger(targetLen);
-                    // first argument is target
-                    var argumentsLength = System.Math.Max(0, arguments.Length - 1);
-                    l = JsNumber.Create((uint) System.Math.Max(((JsNumber) targetLen)._value - argumentsLength, 0));
+                    if (number.IsPositiveInfinity())
+                    {
+                        l = number;
+                    }
+                    else if (number.IsNegativeInfinity())
+                    {
+                        l = JsNumber.PositiveZero;
+                    }
+                    else
+                    {
+                        var targetLenAsInt = (long) TypeConverter.ToIntegerOrInfinity(targetLen);
+                        // first argument is target
+                        var argumentsLength = System.Math.Max(0, arguments.Length - 1);
+                        l = JsNumber.Create((ulong) System.Math.Max(targetLenAsInt - argumentsLength, 0));
+                    }
                 }
             }
             else
@@ -88,9 +101,9 @@ namespace Jint.Native.Function
                 l = JsNumber.PositiveZero;
             }
 
-            f._length = new PropertyDescriptor(l, PropertyFlag.Configurable);
+            f.DefinePropertyOrThrow(CommonProperties.Length, new PropertyDescriptor(l, PropertyFlag.Configurable));
 
-            var targetName = thisObj.Get(CommonProperties.Name);
+            var targetName = oi.Get(CommonProperties.Name);
             if (!targetName.IsString())
             {
                 targetName = JsString.Empty;
@@ -104,19 +117,16 @@ namespace Jint.Native.Function
         /// <summary>
         /// https://tc39.es/ecma262/#sec-boundfunctioncreate
         /// </summary>
-        private FunctionInstance BoundFunctionCreate(ObjectInstance targetFunction, JsValue boundThis, JsValue[] boundArgs)
+        private BindFunctionInstance BoundFunctionCreate(ObjectInstance targetFunction, JsValue boundThis, JsValue[] boundArgs)
         {
             var proto = targetFunction.GetPrototypeOf();
-            var obj = new BindFunctionInstance(_engine, _realm)
-            {
-                _prototype = proto,
-                TargetFunction = targetFunction,
-                BoundThis = boundThis,
-                BoundArgs = boundArgs
-            };
+            var obj = new BindFunctionInstance(_engine, _realm, proto, targetFunction, boundThis, boundArgs);
             return obj;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-function.prototype.tostring
+        /// </summary>
         private JsValue ToString(JsValue thisObj, JsValue[] arguments)
         {
             if (thisObj.IsObject() && thisObj.IsCallable)
@@ -128,7 +138,10 @@ namespace Jint.Native.Function
             return null;
         }
 
-        internal JsValue Apply(JsValue thisObject, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-function.prototype.apply
+        /// </summary>
+        private JsValue Apply(JsValue thisObject, JsValue[] arguments)
         {
             var func = thisObject as ICallable;
             if (func is null)
@@ -143,19 +156,22 @@ namespace Jint.Native.Function
                 return func.Call(thisArg, Arguments.Empty);
             }
 
-            var argList = CreateListFromArrayLike(argArray);
+            var argList = CreateListFromArrayLike(_realm, argArray);
 
             var result = func.Call(thisArg, argList);
 
             return result;
         }
 
-        internal JsValue[] CreateListFromArrayLike(JsValue argArray, Types? elementTypes = null)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-createlistfromarraylike
+        /// </summary>
+        internal static JsValue[] CreateListFromArrayLike(Realm realm, JsValue argArray, Types? elementTypes = null)
         {
             var argArrayObj = argArray as ObjectInstance;
             if (argArrayObj is null)
             {
-                ExceptionHelper.ThrowTypeError(_realm);
+                ExceptionHelper.ThrowTypeError(realm);
             }
             var operations = ArrayOperations.For(argArrayObj);
             var allowedTypes = elementTypes ??
@@ -165,6 +181,9 @@ namespace Jint.Native.Function
             return argList;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-function.prototype.call
+        /// </summary>
         private JsValue CallImpl(JsValue thisObject, JsValue[] arguments)
         {
             var func = thisObject as ICallable;
@@ -184,7 +203,7 @@ namespace Jint.Native.Function
             return result;
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             return Undefined;
         }

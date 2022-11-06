@@ -1,13 +1,21 @@
-using System;
-using System.Collections.Generic;
 using Jint.Native;
 using Jint.Runtime;
-using Xunit;
+using Xunit.Abstractions;
 
 namespace Jint.Tests.Runtime
 {
     public class TypeConverterTests
     {
+        private readonly Engine _engine;
+
+        public TypeConverterTests(ITestOutputHelper output)
+        {
+            _engine = new Engine()
+                .SetValue("log", new Action<object>(o => output.WriteLine(o.ToString())))
+                .SetValue("assert", new Action<bool>(Assert.True))
+                .SetValue("equal", new Action<object, object>(Assert.Equal))
+                ;
+        }
 
         public static readonly IEnumerable<object[]> ConvertNumberToInt32AndUint32TestData = new TheoryData<double, int>()
         {
@@ -54,7 +62,7 @@ namespace Jint.Tests.Runtime
             { (Math.Pow(2, 53) - 1.0) * Math.Pow(2, 32), 0 },
             { -(Math.Pow(2, 53) - 1.0) * Math.Pow(2, 32), 0 },
             { (Math.Pow(2, 53) - 1.0) * Math.Pow(2, 36), 0 },
-    
+
             { double.MaxValue, 0 },
             { double.MinValue, 0 },
             { double.PositiveInfinity, 0 },
@@ -71,6 +79,18 @@ namespace Jint.Tests.Runtime
             Assert.Equal((uint)expectedResult, TypeConverter.ToUint32(jsval));
         }
 
+        [Fact]
+        public void ToPrimitiveShouldEvaluateOnlyOnceDuringInExpression()
+        {
+            _engine.Execute(@"
+                var b = {};
+                var bval = 0;
+                b[Symbol.toPrimitive] = function(hint) { return bval++; };
+
+                b in {};
+                equal(1, bval);
+            ");
+        }
     }
 
 }

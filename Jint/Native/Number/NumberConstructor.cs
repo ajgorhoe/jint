@@ -1,4 +1,4 @@
-﻿using Jint.Collections;
+using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Global;
 using Jint.Native.Object;
@@ -8,6 +8,9 @@ using Jint.Runtime.Interop;
 
 namespace Jint.Native.Number
 {
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-number-constructor
+    /// </summary>
     public sealed class NumberConstructor : FunctionInstance, IConstructor
     {
         private static readonly JsString _functionName = new JsString("Number");
@@ -109,45 +112,57 @@ namespace Jint.Native.Number
             return System.Math.Abs(integer) <= MaxSafeInteger;
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
-            if (arguments.Length == 0)
-            {
-                return 0d;
-            }
-
-            return TypeConverter.ToNumber(arguments[0]);
+            var n = ProcessFirstParameter(arguments);
+            return n;
         }
 
         /// <summary>
         /// https://tc39.es/ecma262/#sec-number-constructor-number-value
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
-            var value = arguments.Length > 0
-                ? JsNumber.Create(TypeConverter.ToNumber(arguments[0]))
-                : JsNumber.PositiveZero;
+            var n = ProcessFirstParameter(arguments);
 
             if (newTarget.IsUndefined())
             {
-                return Construct(value);
+                return Construct(n);
             }
 
             var o = OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.Number.PrototypeObject,
-                static (engine, realm, state) => new NumberInstance(engine, (JsNumber) state), value);
+                static (engine, realm, state) => new NumberInstance(engine, state!), n);
             return o;
         }
 
-        public NumberPrototype PrototypeObject { get; private set; }
+        private static JsNumber ProcessFirstParameter(JsValue[] arguments)
+        {
+            var n = JsNumber.PositiveZero;
+            if (arguments.Length > 0)
+            {
+                var prim = TypeConverter.ToNumeric(arguments[0]);
+                if (prim.IsBigInt())
+                {
+                    n = JsNumber.Create((long) ((JsBigInt) prim)._value);
+                }
+                else
+                {
+                    n = (JsNumber) prim;
+                }
+            }
+
+            return n;
+        }
+
+        public NumberPrototype PrototypeObject { get; }
 
         public NumberInstance Construct(JsNumber value)
         {
-            var instance = new NumberInstance(Engine)
+            var instance = new NumberInstance(Engine, value)
             {
-                _prototype = PrototypeObject,
-                NumberData = value
+                _prototype = PrototypeObject
             };
 
             return instance;

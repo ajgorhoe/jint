@@ -1,6 +1,4 @@
-﻿using System;
-using System.Globalization;
-using System.IO;
+﻿using System.Globalization;
 using System.Reflection;
 using Esprima;
 using Jint.Native;
@@ -8,7 +6,6 @@ using Jint.Native.Array;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Debugger;
-using Xunit;
 using Xunit.Abstractions;
 
 #pragma warning disable 618
@@ -547,6 +544,22 @@ namespace Jint.Tests.Runtime
             ");
         }
 
+        [Theory]
+        [InlineData(2147483647, 1, 2147483648)]
+        [InlineData(-2147483647, -2, -2147483649)]
+        public void IntegerAdditionShouldNotOverflow(int lhs, int rhs, long result)
+        {
+            RunTest($"assert({lhs} + {rhs} == {result})");
+        }
+
+        [Theory]
+        [InlineData(2147483647, -1, 2147483648)]
+        [InlineData(-2147483647, 2, -2147483649)]
+        public void IntegerSubtractionShouldNotOverflow(int lhs, int rhs, long result)
+        {
+            RunTest($"assert({lhs} - {rhs} == {result})");
+        }
+
         [Fact]
         public void ToNumberHandlesStringObject()
         {
@@ -740,6 +753,7 @@ namespace Jint.Tests.Runtime
         [InlineData(double.NaN, "parseInt(Infinity)")]
         [InlineData(-1d, "parseInt(-1)")]
         [InlineData(-1d, "parseInt('-1')")]
+        [InlineData(double.NaN, "parseInt(new Array(100000).join('Z'))")]
         public void ShouldEvaluateParseInt(object expected, string source)
         {
             var engine = new Engine();
@@ -1006,8 +1020,8 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void JsonParserShouldHandleEmptyString()
         {
-            var ex = Assert.Throws<ParserException>(() => _engine.Evaluate("JSON.parse('');"));
-            Assert.Equal("Line 1: Unexpected end of input", ex.Message);
+            var ex = Assert.Throws<JavaScriptException>(() => _engine.Evaluate("JSON.parse('');"));
+            Assert.Equal("Unexpected end of JSON input at position 0", ex.Message);
         }
 
         [Fact]
@@ -1030,13 +1044,13 @@ namespace Jint.Tests.Runtime
             var engine = new Engine();
             try
             {
-                engine.Evaluate("1.2+ new", new ParserOptions(source: "jQuery.js"));
+                engine.Evaluate("1.2+ new", "jQuery.js");
             }
             catch (ParserException e)
             {
                 Assert.Equal(1, e.LineNumber);
                 Assert.Equal(9, e.Column);
-                Assert.Equal("jQuery.js", e.SourceText);
+                Assert.Equal("jQuery.js", e.SourceLocation);
             }
         }
         #region DateParsingAndStrings
@@ -1099,7 +1113,7 @@ namespace Jint.Tests.Runtime
             Assert.Equal(-11 * 60 * 1000, parseLocalEpoch);
 
             var epochToLocalString = engine.Evaluate("var d = new Date(0); d.toString();").AsString();
-            Assert.Equal("Thu Jan 01 1970 00:11:00 GMT+0011", epochToLocalString);
+            Assert.Equal("Thu Jan 01 1970 00:11:00 GMT+0011 (Custom Time)", epochToLocalString);
 
             var epochToUTCString = engine.Evaluate("var d = new Date(0); d.toUTCString();").AsString();
             Assert.Equal("Thu, 01 Jan 1970 00:00:00 GMT", epochToUTCString);
@@ -1109,9 +1123,9 @@ namespace Jint.Tests.Runtime
         [InlineData("1970")]
         [InlineData("1970-01")]
         [InlineData("1970-01-01")]
-        [InlineData("1970-01-01T00:00")]
-        [InlineData("1970-01-01T00:00:00")]
-        [InlineData("1970-01-01T00:00:00.000")]
+        [InlineData("1970-01-01T00:00Z")]
+        [InlineData("1970-01-01T00:00:00Z")]
+        [InlineData("1970-01-01T00:00:00.000Z")]
         [InlineData("1970Z")]
         [InlineData("1970-1Z")]
         [InlineData("1970-1-1Z")]
@@ -1137,6 +1151,9 @@ namespace Jint.Tests.Runtime
         }
 
         [Theory]
+        [InlineData("1970-01-01T00:00")]
+        [InlineData("1970-01-01T00:00:00")]
+        [InlineData("1970-01-01T00:00:00.000")]
         [InlineData("1970/01")]
         [InlineData("1970/01/01")]
         [InlineData("1970/01/01T00:00")]
@@ -1191,18 +1208,19 @@ namespace Jint.Tests.Runtime
             Assert.Equal(testDateTimeOffset.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture), engine.Evaluate("d.toISOString();").ToString());
         }
 
-        [Theory, MemberData("TestDates")]
+        [Theory, MemberData(nameof(TestDates))]
         public void TestDateToStringFormat(DateTime testDate)
         {
             var customTimeZone = _pacificTimeZone;
 
             var engine = new Engine(ctx => ctx.LocalTimeZone(customTimeZone));
-            var testDateTimeOffset = new DateTimeOffset(testDate, customTimeZone.GetUtcOffset(testDate));
-            engine.Execute(
-                string.Format("var d = new Date({0},{1},{2},{3},{4},{5},{6});", testDateTimeOffset.Year, testDateTimeOffset.Month - 1, testDateTimeOffset.Day, testDateTimeOffset.Hour, testDateTimeOffset.Minute, testDateTimeOffset.Second, testDateTimeOffset.Millisecond));
+            var dt = new DateTimeOffset(testDate, customTimeZone.GetUtcOffset(testDate));
+            var dateScript = $"var d = new Date({dt.Year}, {dt.Month - 1}, {dt.Day}, {dt.Hour}, {dt.Minute}, {dt.Second}, {dt.Millisecond});";
+            engine.Execute(dateScript);
 
-            var expected = testDateTimeOffset.ToString("ddd MMM dd yyyy HH:mm:ss", CultureInfo.InvariantCulture);
-            expected += testDateTimeOffset.ToString(" 'GMT'zzz", CultureInfo.InvariantCulture).Replace(":", "");
+            var expected = dt.ToString("ddd MMM dd yyyy HH:mm:ss", CultureInfo.InvariantCulture);
+            expected += dt.ToString(" 'GMT'zzz", CultureInfo.InvariantCulture).Replace(":", "");
+            expected += " (Pacific Standard Time)";
             var actual = engine.Evaluate("d.toString();").ToString();
 
             Assert.Equal(expected, actual);
@@ -1235,6 +1253,29 @@ namespace Jint.Tests.Runtime
 
                 assert('Hello Paul' == html);
             ");
+        }
+
+        [Fact]
+        public void ShouldExecutePrism()
+        {
+            var content = GetEmbeddedFile("prism.js");
+
+            RunTest(content);
+
+            RunTest(@"
+                var input = 'using System; public class Person { public int Name { get; set; } }';
+                var lang = 'csharp';
+                var highlighted = Prism.highlight(input, Prism.languages.csharp, lang);
+
+                assert(highlighted.includes('System'));
+                assert(highlighted.includes('Person'));
+                assert(highlighted.includes('Name'));
+
+                log(highlighted);
+            ");
+
+            _engine.SetValue("input", File.ReadAllText("../../../../Jint/Engine.cs"));
+            RunTest("Prism.highlight(input, Prism.languages.csharp, lang);");
         }
 
         [Fact]
@@ -1314,10 +1355,10 @@ var prep = function (fn) { fn(); };
         {
             var engine = new Engine();
 
-            var minValue = engine.Evaluate("new Date('0001-01-01T00:00:00.000')").ToObject();
+            var minValue = engine.Evaluate("new Date('0001-01-01T00:00:00.000Z')").ToObject();
             Assert.Equal(new DateTime(1, 1, 1, 0, 0, 0, DateTimeKind.Utc), minValue);
 
-            var maxValue = engine.Evaluate("new Date('9999-12-31T23:59:59.999')").ToObject();
+            var maxValue = engine.Evaluate("new Date('9999-12-31T23:59:59.999Z')").ToObject();
 
 #if NETCOREAPP
             Assert.Equal(new DateTime(9999, 12, 31, 23, 59, 59, 998, DateTimeKind.Utc), maxValue);
@@ -1452,7 +1493,7 @@ var prep = function (fn) { fn(); };
 
             engine.DebugHandler.Break += EngineStep;
 
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(1, 1));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(1, 0));
 
             engine.Evaluate(@"var local = true;
                 if (local === true)
@@ -1469,7 +1510,7 @@ var prep = function (fn) { fn(); };
             countBreak = 0;
             stepMode = StepMode.Into;
 
-            var engine = new Engine(options => options.DebugMode());
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(stepMode));
 
             engine.DebugHandler.Step += EngineStep;
 
@@ -1488,8 +1529,8 @@ var prep = function (fn) { fn(); };
             countBreak = 0;
             stepMode = StepMode.Into;
 
-            var engine = new Engine(options => options.DebugMode());
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(1, 1));
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(stepMode));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(1, 1));
             engine.DebugHandler.Step += EngineStep;
             engine.DebugHandler.Break += EngineStep;
 
@@ -1518,7 +1559,7 @@ var prep = function (fn) { fn(); };
             stepMode = StepMode.None;
 
             var engine = new Engine(options => options.DebugMode());
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(5, 0));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(5, 0));
             engine.DebugHandler.Break += EngineStepVerifyDebugInfo;
 
             engine.Evaluate(@"var global = true;
@@ -1541,7 +1582,7 @@ var prep = function (fn) { fn(); };
             Assert.NotNull(debugInfo);
 
             Assert.NotNull(debugInfo.CallStack);
-            Assert.NotNull(debugInfo.CurrentStatement);
+            Assert.NotNull(debugInfo.CurrentNode);
             Assert.NotNull(debugInfo.CurrentScopeChain);
             Assert.NotNull(debugInfo.CurrentScopeChain.Global);
             Assert.NotNull(debugInfo.CurrentScopeChain.Local);
@@ -1569,8 +1610,8 @@ var prep = function (fn) { fn(); };
 
             engine.DebugHandler.Break += EngineStep;
 
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(5, 16, "condition === true"));
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(6, 16, "condition === false"));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(5, 16, "condition === true"));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(6, 16, "condition === false"));
 
             engine.Evaluate(@"var local = true;
                 var condition = true;
@@ -1591,7 +1632,7 @@ var prep = function (fn) { fn(); };
             countBreak = 0;
             stepMode = StepMode.Out;
 
-            var engine = new Engine(options => options.DebugMode());
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(StepMode.Into));
 
             engine.DebugHandler.Step += EngineStep;
 
@@ -1613,7 +1654,7 @@ var prep = function (fn) { fn(); };
         {
             countBreak = 0;
 
-            var engine = new Engine(options => options.DebugMode());
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(StepMode.Into));
 
             engine.DebugHandler.Step += EngineStepOutWhenInsideFunction;
 
@@ -1650,7 +1691,7 @@ var prep = function (fn) { fn(); };
             stepMode = StepMode.None;
 
             var engine = new Engine(options => options.DebugMode());
-            engine.DebugHandler.BreakPoints.Add(new BreakPoint(4, 33));
+            engine.DebugHandler.BreakPoints.Set(new BreakPoint(4, 32));
             engine.DebugHandler.Break += EngineStep;
 
             engine.Evaluate(@"var global = true;
@@ -1670,10 +1711,10 @@ var prep = function (fn) { fn(); };
         public void ShouldNotStepInsideIfRequiredToStepOver()
         {
             countBreak = 0;
-
-            var engine = new Engine(options => options.DebugMode());
-
             stepMode = StepMode.Over;
+
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(stepMode));
+
             engine.DebugHandler.Step += EngineStep;
 
             engine.Evaluate(@"function func() // first step
@@ -1693,22 +1734,22 @@ var prep = function (fn) { fn(); };
         public void ShouldStepAllStatementsWithoutInvocationsIfStepOver()
         {
             countBreak = 0;
-
-            var engine = new Engine(options => options.DebugMode());
-
             stepMode = StepMode.Over;
+
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(stepMode));
+
             engine.DebugHandler.Step += EngineStep;
 
             engine.Evaluate(@"var step1 = 1; // first step
                 var step2 = 2; // second step
                 if (step1 !== step2) // third step
-                { // fourth step
-                    ; // fifth step
+                {
+                    ; // fourth step
                 }");
 
             engine.DebugHandler.Step -= EngineStep;
 
-            Assert.Equal(5, countBreak);
+            Assert.Equal(4, countBreak);
         }
 
         [Fact]
@@ -1794,9 +1835,9 @@ var prep = function (fn) { fn(); };
             engine.Evaluate(@"
                     var d = new Date(1433160000000);
 
-                    equal('Mon Jun 01 2015 05:00:00 GMT-0700', d.toString());
+                    equal('Mon Jun 01 2015 05:00:00 GMT-0700 (Pacific Standard Time)', d.toString());
                     equal('Mon Jun 01 2015', d.toDateString());
-                    equal('05:00:00 GMT-0700', d.toTimeString());
+                    equal('05:00:00 GMT-0700 (Pacific Standard Time)', d.toTimeString());
                     equal('lundi 1 juin 2015 05:00:00', d.toLocaleString());
                     equal('lundi 1 juin 2015', d.toLocaleDateString());
                     equal('05:00:00', d.toLocaleTimeString());
@@ -1810,13 +1851,12 @@ var prep = function (fn) { fn(); };
             var engine = new Engine(options => options.LocalTimeZone(EST))
                 .SetValue("log", new Action<object>(Console.WriteLine))
                 .SetValue("assert", new Action<bool>(Assert.True))
-                .SetValue("equal", new Action<object, object>(Assert.Equal))
-                ;
+                .SetValue("equal", new Action<object, object>(Assert.Equal));
 
             engine.Evaluate(@"
                     var d = new Date(2016, 8, 1);
-
-                    equal('Thu Sep 01 2016 00:00:00 GMT-0400', d.toString());
+                    // there's a Linux difference, so do a replace
+                    equal('Thu Sep 01 2016 00:00:00 GMT-0400 (US Eastern Standard Time)', d.toString().replace('(Eastern Standard Time)', '(US Eastern Standard Time)'));
                     equal('Thu Sep 01 2016', d.toDateString());
             ");
         }
@@ -1920,7 +1960,7 @@ var prep = function (fn) { fn(); };
         {
 
             RunTest(@"
-                var d = new Date('1969-01-01T08:17:00');
+                var d = new Date('1969-01-01T08:17:00Z');
                 d.setYear(2015);
                 equal('2015-01-01T08:17:00.000Z', d.toISOString());
             ");
@@ -1940,20 +1980,16 @@ var prep = function (fn) { fn(); };
         [Fact]
         public void ExceptionShouldHaveLocationOfInnerFunction()
         {
-            try
-            {
-                new Engine()
-                    .Evaluate(@"
-                    function test(s) {
-                        o.boom();
-                    }
-                    test('arg');
-                ");
-            }
-            catch (JavaScriptException ex)
-            {
-                Assert.Equal(3, ex.LineNumber);
-            }
+            var engine = new Engine();
+            const string source = @"
+                function test(s) {
+                    o.boom();
+                }
+                test('arg');
+            ";
+
+            var ex = Assert.Throws<JavaScriptException>(() => engine.Evaluate(source));
+            Assert.Equal(3, ex.Location.Start.Line);
         }
 
         [Fact]
@@ -2057,6 +2093,20 @@ var prep = function (fn) { fn(); };
             ");
 
             Assert.True(res == "Cyclic reference detected.");
+        }
+
+        [Fact]
+        public void ShouldNotStringifyFunctionValuedProperties()
+        {
+            var engine = new Engine();
+            var res = engine.Evaluate(@"
+                var obj = {
+                    f: function() { }
+                };
+                return JSON.stringify(obj);
+            ");
+
+            Assert.Equal("{}", res.AsString());
         }
 
         [Theory]
@@ -2647,7 +2697,7 @@ function output(x) {
         {
             var engine = new Engine();
             var ex = Assert.Throws<JavaScriptException>(() => engine.Evaluate("JSON.parse('[01]')"));
-            Assert.Equal("Unexpected token '1'", ex.Message);
+            Assert.Equal("Unexpected token '1' in JSON at position 2", ex.Message);
 
             var voidCompletion = engine.Evaluate("try { JSON.parse('01') } catch (e) {}");
             Assert.Equal(JsValue.Undefined, voidCompletion);
@@ -2774,6 +2824,62 @@ x.test = {
                 .AsNumber();
 
             Assert.Equal(1, result);
+        }
+
+        [Fact]
+        public void ClassDeclarationHoisting()
+        {
+            var ex = Assert.Throws<JavaScriptException>(() => _engine.Evaluate("typeof MyClass; class MyClass {}"));
+            Assert.Equal("Cannot access 'MyClass' before initialization", ex.Message);
+        }
+
+        [Fact]
+        public void ShouldObeyScriptLevelStrictModeInFunctions()
+        {
+            var engine = new Engine();
+            const string source = "'use strict'; var x = () => { delete Boolean.prototype; }; x();";
+            var ex = Assert.Throws<JavaScriptException>(() => engine.Evaluate(source));
+            Assert.Equal("Cannot delete property 'prototype' of function Boolean() { [native code] }", ex.Message);
+
+            const string source2 = "'use strict'; delete foobar;";
+            ex = Assert.Throws<JavaScriptException>(() => engine.Evaluate(source2));
+            Assert.Equal("Delete of an unqualified identifier in strict mode.", ex.Message);
+        }
+
+        [Fact]
+        public void ShouldSupportThisInSubclass()
+        {
+            var engine = new Engine();
+            var script = "class MyClass1 { } class MyClass2 extends MyClass1 { constructor() { } } const x = new MyClass2();";
+
+            var ex = Assert.Throws<JavaScriptException>(() => engine.Evaluate(script));
+            Assert.Equal("Must call super constructor in derived class before accessing 'this' or returning from derived constructor", ex.Message);
+        }
+
+        [Fact]
+        public void ShouldGetZeroPrefixedNumericKeys()
+        {
+            var engine = new Engine();
+            engine.Evaluate("const testObj = { '02100' : true };");
+            Assert.Equal(1, engine.Evaluate("Object.keys(testObj).length;").AsNumber());
+            Assert.Equal("[\"02100\"]", engine.Evaluate("JSON.stringify(Object.getOwnPropertyNames(testObj));").AsString());
+        }
+
+        [Fact]
+        public void ShouldAllowOptionalChainingForMemberCall()
+        {
+            var engine = new Engine();
+            const string Script = @"
+                const adventurer = {  name: 'Alice', cat: { name: 'Dinah' } };
+                const dogName = adventurer.dog?.name;
+                const methodResult = adventurer.someNonExistentMethod?.();
+                return [ dogName, methodResult ];
+            ";
+            var array = engine.Evaluate(Script).AsArray();
+
+            Assert.Equal(2L, array.Length);
+            Assert.True(array[0].IsUndefined());
+            Assert.True(array[1].IsUndefined());
         }
 
         private class Wrapper

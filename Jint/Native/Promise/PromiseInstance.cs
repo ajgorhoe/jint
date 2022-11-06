@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -21,13 +19,11 @@ namespace Jint.Native.Promise
         Reject
     }
 
-
     internal sealed record PromiseReaction(
         ReactionType Type,
         PromiseCapability Capability,
         JsValue Handler
     );
-
 
     internal sealed record ResolvingFunctions(
         FunctionInstance Resolve,
@@ -46,12 +42,12 @@ namespace Jint.Native.Promise
         internal PromiseState State { get; private set; }
 
         // valid only in settled state (Fulfilled or Rejected)
-        internal JsValue Value { get; private set; }
+        internal JsValue Value { get; private set; } = null!;
 
         internal List<PromiseReaction> PromiseRejectReactions = new();
         internal List<PromiseReaction> PromiseFulfillReactions = new();
 
-        internal PromiseInstance(Engine engine) : base(engine, ObjectClass.Promise)
+        internal PromiseInstance(Engine engine) : base(engine)
         {
         }
 
@@ -93,10 +89,9 @@ namespace Jint.Native.Promise
 
             var result = arguments.At(0);
 
-            if (result == this)
+            if (ReferenceEquals(result, this))
             {
-                ExceptionHelper.ThrowTypeError(_engine.Realm, "Cannot resolve Promise with itself");
-                return Undefined;
+                return RejectPromise(_engine.Realm.Intrinsics.TypeError.Construct("Cannot resolve Promise with itself"));
             }
 
             if (result is not ObjectInstance resultObj)

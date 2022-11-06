@@ -1,9 +1,7 @@
-﻿using Esprima;
-using Jint.Native;
+﻿using Jint.Native;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
 using Jint.Runtime.References;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -22,8 +20,18 @@ namespace Jint.Tests.Runtime
                 return value.IsNull() || value.IsUndefined();
             }
 
-            public bool TryGetCallable(Engine engine, object reference, out JsValue value)
+            public bool TryGetCallable(Engine engine, object callee, out JsValue value)
             {
+                if (callee is Reference reference)
+                {
+                    var name = reference.GetReferencedName().AsString();
+                    if (name == "filter")
+                    {
+                        value = new ClrFunctionInstance(engine, "map", (thisObj, values) => engine.Realm.Intrinsics.Array.ArrayCreate(0));
+                        return true;
+                    }
+                }
+
                 value = new ClrFunctionInstance(engine, "anonymous", (thisObj, values) => thisObj);
                 return true;
             }
@@ -32,6 +40,24 @@ namespace Jint.Tests.Runtime
             {
                 return true;
             }
+        }
+
+        [Fact]
+        public void CanCallFilterOnNull()
+        {
+            var engine = new Engine(cfg => cfg.SetReferencesResolver(new NullPropagationReferenceResolver()));
+
+            const string Script = @"
+var input = {};
+
+var output = { Tags : input.Tags.filter(x=>x!=null) };
+";
+
+            engine.Execute(Script);
+
+            var output = engine.GetValue("output").AsObject();
+
+            Assert.True(output.Get("Tags").IsArray());
         }
 
         [Fact]
@@ -108,9 +134,9 @@ this.is_notnullfield_not_null = this.NotNullField !== null;
 this.has_emptyfield_not_null = this.EmptyField !== null;
 ";
 
-            var wrapperScript = string.Format(@"function ExecutePatchScript(docInner){{ (function(doc){{ {0} }}).apply(docInner); }};", script);
+            var wrapperScript = $@"function ExecutePatchScript(docInner){{ (function(doc){{ {script} }}).apply(docInner); }};";
 
-            engine.Execute(wrapperScript, new ParserOptions("main.js"));
+            engine.Execute(wrapperScript, "main.js");
 
             engine.Invoke("ExecutePatchScript", jsObject);
 

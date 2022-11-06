@@ -1,4 +1,3 @@
-﻿using System;
 using System.Collections.Concurrent;
 using System.Reflection;
 using Jint.Collections;
@@ -12,18 +11,22 @@ namespace Jint.Runtime.Interop
 {
     public sealed class TypeReference : FunctionInstance, IConstructor, IObjectWrapper
     {
-        private static readonly JsString _name = new JsString("typereference");
+        private static readonly JsString _name = new("typereference");
         private static readonly ConcurrentDictionary<Type, MethodDescriptor[]> _constructorCache = new();
-        private static readonly ConcurrentDictionary<Tuple<Type, string>, ReflectionAccessor> _memberAccessors = new();
+        private static readonly ConcurrentDictionary<MemberAccessorKey, ReflectionAccessor> _memberAccessors = new();
+
+        private readonly record struct MemberAccessorKey(Type Type, string PropertyName);
 
         private TypeReference(Engine engine, Type type)
-            : base(engine, engine.Realm, _name, FunctionThisMode.Global, ObjectClass.TypeReference)
+            : base(engine, engine.Realm, _name, FunctionThisMode.Global)
         {
             ReferenceType = type;
 
             _prototype = engine.Realm.Intrinsics.Function.PrototypeObject;
             _length = PropertyDescriptor.AllForbiddenDescriptor.NumberZero;
-            _prototypeDescriptor = new PropertyDescriptor(engine.Realm.Intrinsics.Object.PrototypeObject, PropertyFlag.AllForbidden);
+
+            var proto = new ObjectInstance(engine);
+            _prototypeDescriptor = new PropertyDescriptor(proto, PropertyFlag.AllForbidden);
 
             PreventExtensions();
         }
@@ -40,39 +43,65 @@ namespace Jint.Runtime.Interop
             return new TypeReference(engine, type);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             // direct calls on a TypeReference constructor object is equivalent to the new operator
-            return Construct(arguments, thisObject);
+            return Construct(arguments, Undefined);
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
+
+        private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
         {
-            if (arguments.Length == 0 && ReferenceType.IsValueType)
+            static ObjectInstance ObjectCreator(Engine engine, Realm realm, ObjectCreateState state)
             {
-                var instance = Activator.CreateInstance(ReferenceType);
-                var result = TypeConverter.ToObject(_realm, FromObject(Engine, instance));
+                var arguments = state.Arguments;
+                var referenceType = state.TypeReference.ReferenceType;
+
+                ObjectInstance? result = null;
+                if (arguments.Length == 0 && referenceType.IsValueType)
+                {
+                    var instance = Activator.CreateInstance(referenceType);
+                    result = TypeConverter.ToObject(realm, FromObject(engine, instance));
+                }
+                else
+                {
+                    var constructors = _constructorCache.GetOrAdd(
+                        referenceType,
+                        t => MethodDescriptor.Build(t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)));
+
+                    foreach (var (method, _, _) in TypeConverter.FindBestMatch(engine, constructors, _ => arguments))
+                    {
+                        var retVal = method.Call(engine, null, arguments);
+                        result = TypeConverter.ToObject(realm, retVal);
+
+                        // todo: cache method info
+                        break;
+                    }
+                }
+
+                if (result is null)
+                {
+                    ExceptionHelper.ThrowTypeError(realm, "No public methods with the specified arguments were found.");
+                }
+
+                result.SetPrototypeOf(state.TypeReference);
 
                 return result;
             }
 
-            var constructors = _constructorCache.GetOrAdd(
-                ReferenceType,
-                t => MethodDescriptor.Build(t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)));
+            // TODO should inject prototype that reflects TypeReference's target's layout
+            var thisArgument = OrdinaryCreateFromConstructor(
+                newTarget,
+                static intrinsics => intrinsics.Object.PrototypeObject,
+                ObjectCreator,
+                new ObjectCreateState(this, arguments));
 
-            foreach (var (method, _, _) in TypeConverter.FindBestMatch(_engine, constructors, _ => arguments))
-            {
-                var retVal = method.Call(Engine, null, arguments);
-                var result = TypeConverter.ToObject(_realm, retVal);
 
-                // todo: cache method info
-
-                return result;
-            }
-
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "No public methods with the specified arguments were found.");
-            return null;
+            return thisArgument;
         }
+
+        private readonly record struct ObjectCreateState(TypeReference TypeReference, JsValue[] Arguments);
 
         internal override bool OrdinaryHasInstance(JsValue v)
         {
@@ -102,12 +131,6 @@ namespace Jint.Runtime.Interop
             }
 
             var ownDesc = GetOwnProperty(property);
-
-            if (ownDesc == null)
-            {
-                return false;
-            }
-
             ownDesc.Value = value;
             return true;
         }
@@ -125,23 +148,27 @@ namespace Jint.Runtime.Interop
             if (_properties?.TryGetValue(key, out descriptor) != true)
             {
                 descriptor = CreatePropertyDescriptor(key);
-                _properties ??= new PropertyDictionary();
-                _properties[key] = descriptor;
+                if (!ReferenceEquals(descriptor, PropertyDescriptor.Undefined))
+                {
+                    _properties ??= new PropertyDictionary();
+                    _properties[key] = descriptor;
+                    return descriptor;
+                }
             }
 
-            return descriptor;
+            return base.GetOwnProperty(property);
         }
 
         private PropertyDescriptor CreatePropertyDescriptor(string name)
         {
-            var key = new Tuple<Type, string>(ReferenceType, name);
-            var accessor = _memberAccessors.GetOrAdd(key, x => ResolveMemberAccessor(x.Item1, x.Item2));
-            return accessor.CreatePropertyDescriptor(_engine, ReferenceType);
+            var key = new MemberAccessorKey(ReferenceType, name);
+            var accessor = _memberAccessors.GetOrAdd(key, x => ResolveMemberAccessor(_engine, x.Type, x.PropertyName));
+            return accessor.CreatePropertyDescriptor(_engine, ReferenceType, enumerable: true);
         }
 
-        private ReflectionAccessor ResolveMemberAccessor(Type type, string name)
+        private static ReflectionAccessor ResolveMemberAccessor(Engine engine, Type type, string name)
         {
-            var typeResolver = _engine.Options.Interop.TypeResolver;
+            var typeResolver = engine.Options.Interop.TypeResolver;
 
             if (type.IsEnum)
             {
@@ -168,8 +195,8 @@ namespace Jint.Runtime.Interop
                 return ConstantValueAccessor.NullAccessor;
             }
 
-            const BindingFlags bindingFlags = BindingFlags.Public | BindingFlags.Static;
-            return typeResolver.TryFindMemberAccessor(_engine, type, name, bindingFlags, indexerToTry: null, out var accessor)
+            const BindingFlags bindingFlags = BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy;
+            return typeResolver.TryFindMemberAccessor(engine, type, name, bindingFlags, indexerToTry: null, out var accessor)
                 ? accessor
                 : ConstantValueAccessor.NullAccessor;
         }

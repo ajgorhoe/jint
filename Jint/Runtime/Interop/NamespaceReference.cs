@@ -1,5 +1,3 @@
-﻿using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using Jint.Native;
@@ -33,7 +31,7 @@ namespace Jint.Runtime.Interop
             return false;
         }
 
-        public JsValue Call(JsValue thisObject, JsValue[] arguments)
+        JsValue ICallable.Call(JsValue thisObject, JsValue[] arguments)
         {
             // direct calls on a NamespaceReference constructor object is creating a generic type
             var genericTypes = new Type[arguments.Length];
@@ -42,12 +40,13 @@ namespace Jint.Runtime.Interop
                 var genericTypeReference = arguments[i];
                 if (genericTypeReference.IsUndefined()
                     || !genericTypeReference.IsObject()
-                    || genericTypeReference.AsObject().Class != ObjectClass.TypeReference)
+                    || genericTypeReference.AsObject() is not TypeReference tr)
                 {
                     ExceptionHelper.ThrowTypeError(_engine.Realm, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?");
+                    return default;
                 }
 
-                genericTypes[i] = ((TypeReference) genericTypeReference).ReferenceType;
+                genericTypes[i] = tr.ReferenceType;
             }
 
             var typeReference = GetPath(_path + "`" + arguments.Length.ToString(CultureInfo.InvariantCulture)).As<TypeReference>();
@@ -65,7 +64,7 @@ namespace Jint.Runtime.Interop
             }
             catch (Exception e)
             {
-                ExceptionHelper.ThrowTypeError(_engine.Realm, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?", e);
+                ExceptionHelper.ThrowInvalidOperationException($"Invalid generic type parameter on {_path}, if this is not a generic type / method, are you missing a lookup assembly?", e);
                 return null;
             }
         }
@@ -154,13 +153,13 @@ namespace Jint.Runtime.Interop
         /// <param name="typeName"> Name of the type. </param>
         ///
         /// <returns>   The type. </returns>
-        private static Type GetType(Assembly assembly, string typeName)
+        private static Type? GetType(Assembly assembly, string typeName)
         {
             var compared = typeName.Replace("+", ".");
             Type[] types = assembly.GetTypes();
             foreach (Type t in types)
             {
-                if (t.FullName.Replace("+", ".") == compared)
+                if (t.FullName?.Replace("+", ".") == compared)
                 {
                     return t;
                 }

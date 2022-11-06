@@ -1,6 +1,6 @@
-﻿using System.Collections.Generic;
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using Esprima.Ast;
+using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Array;
 using Jint.Native.Function;
@@ -23,7 +23,7 @@ namespace Jint.Runtime.Environments
             Uninitialized
         }
 
-        private JsValue _thisValue;
+        private JsValue? _thisValue;
         private ThisBindingStatus _thisBindingStatus;
         internal readonly FunctionInstance _functionObject;
 
@@ -52,24 +52,39 @@ namespace Jint.Runtime.Environments
 
         public JsValue BindThisValue(JsValue value)
         {
-            if (_thisBindingStatus == ThisBindingStatus.Initialized)
+            if (_thisBindingStatus != ThisBindingStatus.Initialized)
             {
-                ExceptionHelper.ThrowReferenceError(_functionObject._realm, (string) null);
+                _thisValue = value;
+                _thisBindingStatus = ThisBindingStatus.Initialized;
+                return value;
             }
-            _thisValue = value;
-            _thisBindingStatus = ThisBindingStatus.Initialized;
-            return value;
+
+            ExceptionHelper.ThrowReferenceError(_functionObject._realm, "'this' has already been bound");
+            return null!;
         }
 
         public override JsValue GetThisBinding()
         {
             if (_thisBindingStatus != ThisBindingStatus.Uninitialized)
             {
-                return _thisValue;
+                return _thisValue!;
             }
 
-            ExceptionHelper.ThrowReferenceError(_engine.ExecutionContext.Realm, (string) null);
-            return null;
+            ThrowUninitializedThis();
+            return null!;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ThrowUninitializedThis()
+        {
+            var message = "Cannot access uninitialized 'this'";
+            if (NewTarget is ScriptFunctionInstance { _isClassConstructor: true, _constructorKind: ConstructorKind.Derived })
+            {
+                // help with better error message
+                message = "Must call super constructor in derived class before accessing 'this' or returning from derived constructor";
+            }
+
+            ExceptionHelper.ThrowReferenceError(_engine.ExecutionContext.Realm, message);
         }
 
         public JsValue GetSuperBase()
@@ -85,29 +100,35 @@ namespace Jint.Runtime.Environments
         internal void InitializeParameters(
             Key[] parameterNames,
             bool hasDuplicates,
-            JsValue[] arguments)
+            JsValue[]? arguments)
         {
+            if (parameterNames.Length == 0)
+            {
+                return;
+            }
+
             var value = hasDuplicates ? Undefined : null;
-            var directSet = !hasDuplicates && _dictionary.Count == 0;
-            for (var i = 0; (uint) i < (uint) parameterNames.Length; i++)
+            var directSet = !hasDuplicates && (_dictionary is null || _dictionary.Count == 0);
+            for (uint i = 0; i < (uint) parameterNames.Length; i++)
             {
                 var paramName = parameterNames[i];
-                if (directSet || !_dictionary.ContainsKey(paramName))
+                if (directSet || _dictionary is null || !_dictionary.ContainsKey(paramName))
                 {
                     var parameterValue = value;
                     if (arguments != null)
                     {
-                        parameterValue = (uint) i < (uint) arguments.Length ? arguments[i] : Undefined;
+                        parameterValue = i < (uint) arguments.Length ? arguments[i] : Undefined;
                     }
 
-                    _dictionary[paramName] = new Binding(parameterValue, canBeDeleted: false, mutable: true, strict: false);
+                    _dictionary ??= new HybridDictionary<Binding>();
+                    _dictionary[paramName] = new Binding(parameterValue!, canBeDeleted: false, mutable: true, strict: false);
                 }
             }
         }
 
         internal void AddFunctionParameters(EvaluationContext context, IFunction functionDeclaration, JsValue[] arguments)
         {
-            bool empty = _dictionary.Count == 0;
+            var empty = _dictionary is null || _dictionary.Count == 0;
             ref readonly var parameters = ref functionDeclaration.Params;
             var count = parameters.Count;
             for (var i = 0; i < count; i++)
@@ -119,7 +140,7 @@ namespace Jint.Runtime.Environments
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SetFunctionParameter(
             EvaluationContext context,
-            Node parameter,
+            Node? parameter,
             JsValue[] arguments,
             int index,
             bool initiallyEmpty)
@@ -137,7 +158,7 @@ namespace Jint.Runtime.Environments
 
         private void SetFunctionParameterUnlikely(
             EvaluationContext context,
-            Node parameter,
+            Node? parameter,
             JsValue[] arguments,
             int index,
             bool initiallyEmpty)
@@ -180,8 +201,7 @@ namespace Jint.Runtime.Environments
 
             var argumentObject = argument.AsObject();
 
-            var processedProperties = objectPattern.Properties.Count > 0 &&
-                                      objectPattern.Properties[objectPattern.Properties.Count - 1] is RestElement
+            var processedProperties = objectPattern.Properties.Count > 0 && objectPattern.Properties[objectPattern.Properties.Count - 1] is RestElement
                 ? new HashSet<JsValue>()
                 : null;
 
@@ -190,7 +210,7 @@ namespace Jint.Runtime.Environments
             {
                 var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
                 var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-                PrivateEnvironmentRecord privateEnvironment = null; // TODO PRIVATE check when implemented
+                PrivateEnvironmentRecord? privateEnvironment = null; // TODO PRIVATE check when implemented
                 _engine.EnterExecutionContext(paramVarEnv, paramVarEnv, _engine.ExecutionContext.Realm, privateEnvironment);
 
                 try
@@ -209,7 +229,7 @@ namespace Jint.Runtime.Environments
                         else if (p.Key is CallExpression callExpression)
                         {
                             var jintCallExpression = new JintCallExpression(callExpression);
-                            var jsValue = jintCallExpression.GetValue(context).Value;
+                            var jsValue = jintCallExpression.GetValue(context);
                             propertyName = TypeConverter.ToJsString(jsValue);
                         }
                         else
@@ -225,7 +245,7 @@ namespace Jint.Runtime.Environments
                     {
                         if (((RestElement) property).Argument is Identifier restIdentifier)
                         {
-                            var rest = _engine.Realm.Intrinsics.Object.Construct(argumentObject.Properties.Count - processedProperties.Count);
+                            var rest = _engine.Realm.Intrinsics.Object.Construct(argumentObject.Properties!.Count - processedProperties!.Count);
                             argumentObject.CopyDataProperties(rest, processedProperties);
                             SetItemSafely(restIdentifier.Name, rest, initiallyEmpty);
                         }
@@ -251,7 +271,7 @@ namespace Jint.Runtime.Environments
                 ExceptionHelper.ThrowTypeError(_functionObject._realm, "Destructed parameter is null");
             }
 
-            ArrayInstance array = null;
+            ArrayInstance? array = null;
             var arrayContents = System.Array.Empty<JsValue>();
             if (argument.IsArray())
             {
@@ -259,7 +279,7 @@ namespace Jint.Runtime.Environments
             }
             else if (argument.IsObject() && argument.TryGetIterator(_functionObject._realm, out var iterator))
             {
-                array = _engine.Realm.Intrinsics.Array.ConstructFast(0);
+                array = _engine.Realm.Intrinsics.Array.ArrayCreate(0);
                 var max = arrayPattern.Elements.Count;
                 if (max > 0 && arrayPattern.Elements[max - 1]?.Type == Nodes.RestElement)
                 {
@@ -297,7 +317,7 @@ namespace Jint.Runtime.Environments
             int restCount = arguments.Length - (index + 1) + 1;
             uint count = restCount > 0 ? (uint) restCount : 0;
 
-            var rest = _engine.Realm.Intrinsics.Array.ConstructFast(count);
+            var rest = _engine.Realm.Intrinsics.Array.ArrayCreate(count);
 
             uint targetIndex = 0;
             for (var argIndex = index; argIndex < arguments.Length; ++argIndex)
@@ -334,21 +354,21 @@ namespace Jint.Runtime.Environments
                 && right is Identifier idRight
                 && idLeft.Name == idRight.Name)
             {
-                ExceptionHelper.ThrowReferenceError(_functionObject._realm, idRight.Name);
+                ExceptionHelper.ThrowReferenceNameError(_functionObject._realm, idRight.Name);
             }
 
             if (argument.IsUndefined())
             {
                 var expression = right.As<Expression>();
-                var jintExpression = JintExpression.Build(_engine, expression);
+                var jintExpression = JintExpression.Build(expression);
 
                 var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
                 var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
 
-                _engine.EnterExecutionContext(new ExecutionContext(paramVarEnv, paramVarEnv, null, _engine.Realm, null));
+                _engine.EnterExecutionContext(new ExecutionContext(null, paramVarEnv, paramVarEnv, null, _engine.Realm, null));
                 try
                 {
-                    argument = jintExpression.GetValue(context).Value;
+                    argument = jintExpression.GetValue(context);
                 }
                 finally
                 {
@@ -372,6 +392,7 @@ namespace Jint.Runtime.Environments
         {
             if (initiallyEmpty)
             {
+                _dictionary ??= new HybridDictionary<Binding>();
                 _dictionary[name] = new Binding(argument, canBeDeleted: false, mutable: true, strict: false);
             }
             else
@@ -382,6 +403,7 @@ namespace Jint.Runtime.Environments
 
         private void SetItemCheckExisting(Key name, JsValue argument)
         {
+            _dictionary ??= new HybridDictionary<Binding>();
             if (!_dictionary.TryGetValue(name, out var existing))
             {
                 _dictionary[name] = new Binding(argument, canBeDeleted: false, mutable: true, strict: false);

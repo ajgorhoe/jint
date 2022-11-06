@@ -13,8 +13,9 @@ namespace Jint.Runtime.Descriptors.Specialized
         public ReflectionDescriptor(
             Engine engine,
             ReflectionAccessor reflectionAccessor,
-            object target)
-            : base(PropertyFlag.Enumerable | PropertyFlag.CustomJsValue)
+            object target,
+            bool enumerable)
+            : base((enumerable ? PropertyFlag.Enumerable : PropertyFlag.None) | PropertyFlag.CustomJsValue)
         {
             _engine = engine;
             _reflectionAccessor = reflectionAccessor;
@@ -23,7 +24,7 @@ namespace Jint.Runtime.Descriptors.Specialized
         }
 
 
-        protected internal override JsValue CustomValue
+        protected internal override JsValue? CustomValue
         {
             get
             {
@@ -34,7 +35,7 @@ namespace Jint.Runtime.Descriptors.Specialized
             {
                 try
                 {
-                    _reflectionAccessor.SetValue(_engine, _target, value);
+                    _reflectionAccessor.SetValue(_engine, _target, value!);
                 }
                 catch (TargetInvocationException exception)
                 {

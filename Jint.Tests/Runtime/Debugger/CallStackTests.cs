@@ -1,7 +1,6 @@
 ﻿using Esprima;
 using Esprima.Ast;
 using Jint.Runtime.Debugger;
-using Xunit;
 
 namespace Jint.Tests.Runtime.Debugger
 {
@@ -56,11 +55,11 @@ bar()";
                 // Remember that Esprima (and hence Jint) line numbers are 1-based, not 0-based.
                 Assert.Collection(info.CallStack,
                     // "debugger;"
-                    frame => Assert.Equal(new Position(4, 0), frame.Location.Start),
+                    frame => Assert.Equal(Position.From(4, 0), frame.Location.Start),
                     // "foo();"
-                    frame => Assert.Equal(new Position(9, 0), frame.Location.Start),
+                    frame => Assert.Equal(Position.From(9, 0), frame.Location.Start),
                     // "bar();"
-                    frame => Assert.Equal(new Position(12, 0), frame.Location.Start)
+                    frame => Assert.Equal(Position.From(12, 0), frame.Location.Start)
                 );
             });
         }
@@ -86,9 +85,9 @@ bar()";
                 // Remember that Esprima (and hence Jint) line numbers are 1-based, not 0-based.
                 Assert.Collection(info.CallStack,
                     // function foo()
-                    frame => Assert.Equal(new Position(2, 0), frame.FunctionLocation?.Start),
+                    frame => Assert.Equal(Position.From(2, 0), frame.FunctionLocation?.Start),
                     // function bar()
-                    frame => Assert.Equal(new Position(7, 0), frame.FunctionLocation?.Start),
+                    frame => Assert.Equal(Position.From(7, 0), frame.FunctionLocation?.Start),
                     // global - no function location
                     frame => Assert.Equal(null, frame.FunctionLocation?.Start)
                 );
@@ -106,7 +105,7 @@ bar()";
 
             foo();";
 
-            var engine = new Engine(options => options.DebugMode());
+            var engine = new Engine(options => options.DebugMode().InitialStepMode(StepMode.Into));
 
             bool atReturn = false;
             bool didCheckReturn = false;
@@ -121,7 +120,7 @@ bar()";
                     atReturn = false;
                 }
 
-                if (info.CurrentStatement is ReturnStatement)
+                if (info.CurrentNode is ReturnStatement)
                 {
                     // Step one further, and we should have the return value
                     atReturn = true;

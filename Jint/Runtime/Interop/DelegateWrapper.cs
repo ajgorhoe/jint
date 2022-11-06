@@ -1,4 +1,3 @@
-using System;
 using System.Globalization;
 using System.Reflection;
 using Jint.Extensions;
@@ -37,7 +36,7 @@ namespace Jint.Runtime.Interop
             }
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] jsArguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] jsArguments)
         {
             var parameterInfos = _d.Method.GetParameters();
 
@@ -59,14 +58,14 @@ namespace Jint.Runtime.Interop
 
             var clrTypeConverter = Engine.ClrTypeConverter;
             var valueCoercionType = Engine.Options.Interop.ValueCoercion;
-            var parameters = new object[delegateArgumentsCount];
+            var parameters = new object?[delegateArgumentsCount];
 
             // convert non params parameter to expected types
             for (var i = 0; i < jsArgumentsWithoutParamsCount; i++)
             {
                 var parameterType = parameterInfos[i].ParameterType;
                 var value = jsArguments[i];
-                object converted;
+                object? converted;
 
                 if (parameterType == typeof(JsValue))
                 {
@@ -102,14 +101,14 @@ namespace Jint.Runtime.Interop
                 int paramsArgumentIndex = delegateArgumentsCount - 1;
                 int paramsCount = Math.Max(0, jsArgumentsCount - delegateNonParamsArgumentsCount);
 
-                object[] paramsParameter = new object[paramsCount];
                 var paramsParameterType = parameterInfos[paramsArgumentIndex].ParameterType.GetElementType();
+                var paramsParameter = Array.CreateInstance(paramsParameterType!, paramsCount);
 
                 for (var i = paramsArgumentIndex; i < jsArgumentsCount; i++)
                 {
                     var paramsIndex = i - paramsArgumentIndex;
                     var value = jsArguments[i];
-                    object converted;
+                    object? converted;
 
                     if (paramsParameterType == typeof(JsValue))
                     {
@@ -123,7 +122,7 @@ namespace Jint.Runtime.Interop
                             CultureInfo.InvariantCulture);
                     }
 
-                    paramsParameter[paramsIndex] = converted;
+                    paramsParameter.SetValue(converted, paramsIndex);
                 }
 
                 parameters[paramsArgumentIndex] = paramsParameter;

@@ -1,4 +1,3 @@
-using System;
 using Jint.Native;
 
 namespace Jint.Tests.Runtime.Domain
@@ -21,5 +20,7 @@ namespace Jint.Tests.Runtime.Domain
         public override object ToObject() => _value;
 
         public override string ToString() => _value.ToString();
+
+        public override bool Equals(object obj) => Equals(obj as JsUuid);
     }
 }

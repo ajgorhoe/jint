@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Iterator;
@@ -20,11 +20,11 @@ namespace Jint.Runtime.Interpreter.Statements
         private readonly Expression _rightExpression;
         private readonly IterationKind _iterationKind;
 
-        private JintStatement _body;
-        private JintExpression _expr;
-        private BindingPattern _assignmentPattern;
-        private JintExpression _right;
-        private List<string> _tdzNames;
+        private ProbablyBlockStatement _body;
+        private JintExpression? _expr;
+        private BindingPattern? _assignmentPattern;
+        private JintExpression _right = null!;
+        private List<string>? _tdzNames;
         private bool _destructuring;
         private LhsKind _lhsKind;
 
@@ -87,15 +87,15 @@ namespace Jint.Runtime.Interpreter.Statements
                 _expr = new JintIdentifierExpression((Identifier) _leftNode);
             }
 
-            _body = Build(_forBody);
-            _right = JintExpression.Build(engine, _rightExpression);
+            _body = new ProbablyBlockStatement(_forBody);
+            _right = JintExpression.Build(_rightExpression);
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
         {
             if (!HeadEvaluation(context, out var keyResult))
             {
-                return new Completion(CompletionType.Normal, JsValue.Undefined, null, Location);
+                return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
             }
 
             return BodyEvaluation(context, _expr, _body, keyResult, IterationKind.Enumerate, _lhsKind);
@@ -104,7 +104,7 @@ namespace Jint.Runtime.Interpreter.Statements
         /// <summary>
         /// https://tc39.es/ecma262/#sec-runtime-semantics-forin-div-ofheadevaluation-tdznames-expr-iterationkind
         /// </summary>
-        private bool HeadEvaluation(EvaluationContext context, out IteratorInstance result)
+        private bool HeadEvaluation(EvaluationContext context, [NotNullWhen(true)] out IteratorInstance? result)
         {
             var engine = context.Engine;
             var oldEnv = engine.ExecutionContext.LexicalEnvironment;
@@ -119,7 +119,7 @@ namespace Jint.Runtime.Interpreter.Statements
             }
 
             engine.UpdateLexicalEnvironment(tdz);
-            var exprValue = _right.GetValue(context).Value;
+            var exprValue = _right.GetValue(context);
             engine.UpdateLexicalEnvironment(oldEnv);
 
             if (_iterationKind == IterationKind.Enumerate)
@@ -146,8 +146,8 @@ namespace Jint.Runtime.Interpreter.Statements
         /// </summary>
         private Completion BodyEvaluation(
             EvaluationContext context,
-            JintExpression lhs,
-            JintStatement stmt,
+            JintExpression? lhs,
+            in ProbablyBlockStatement stmt,
             IteratorInstance iteratorRecord,
             IterationKind iterationKind,
             LhsKind lhsKind,
@@ -157,7 +157,7 @@ namespace Jint.Runtime.Interpreter.Statements
             var oldEnv = engine.ExecutionContext.LexicalEnvironment;
             var v = Undefined.Instance;
             var destructuring = _destructuring;
-            string lhsName = null;
+            string? lhsName = null;
 
             var completionType = CompletionType.Normal;
             var close = false;
@@ -166,11 +166,11 @@ namespace Jint.Runtime.Interpreter.Statements
             {
                 while (true)
                 {
-                    EnvironmentRecord iterationEnv = null;
+                    EnvironmentRecord? iterationEnv = null;
                     if (!iteratorRecord.TryIteratorStep(out var nextResult))
                     {
                         close = true;
-                        return new Completion(CompletionType.Normal, v, null, Location);
+                        return new Completion(CompletionType.Normal, v, _statement!);
                     }
 
                     if (iteratorKind == IteratorKind.Async)
@@ -182,12 +182,12 @@ namespace Jint.Runtime.Interpreter.Statements
                     var nextValue = nextResult.Get(CommonProperties.Value);
                     close = true;
 
-                    var lhsRef = new ExpressionResult();
+                    object lhsRef = null!;
                     if (lhsKind != LhsKind.LexicalBinding)
                     {
                         if (!destructuring)
                         {
-                            lhsRef = lhs.Evaluate(context);
+                            lhsRef = lhs!.Evaluate(context);
                         }
                     }
                     else
@@ -203,35 +203,42 @@ namespace Jint.Runtime.Interpreter.Statements
                         {
                             var identifier = (Identifier) ((VariableDeclaration) _leftNode).Declarations[0].Id;
                             lhsName ??= identifier.Name;
-                            lhsRef = new ExpressionResult(ExpressionCompletionType.Normal, engine.ResolveBinding(lhsName), identifier.Location);
+                            lhsRef = engine.ResolveBinding(lhsName);
                         }
                     }
 
-                    var status = new Completion();
+                    if (context.DebugMode)
+                    {
+                        context.Engine.DebugHandler.OnStep(_leftNode);
+                    }
+
+                    var status = CompletionType.Normal;
                     if (!destructuring)
                     {
-                        if (lhsRef.IsAbrupt())
+                        if (context.IsAbrupt())
                         {
                             close = true;
-                            status = new Completion(lhsRef);
+                            status = context.Completion;
                         }
                         else if (lhsKind == LhsKind.LexicalBinding)
                         {
-                            ((Reference) lhsRef.Value).InitializeReferencedBinding(nextValue);
+                            ((Reference) lhsRef).InitializeReferencedBinding(nextValue);
                         }
                         else
                         {
-                            engine.PutValue((Reference) lhsRef.Value, nextValue);
+                            engine.PutValue((Reference) lhsRef, nextValue);
                         }
                     }
                     else
                     {
-                        status = BindingPatternAssignmentExpression.ProcessPatterns(
+                        nextValue = BindingPatternAssignmentExpression.ProcessPatterns(
                             context,
-                            _assignmentPattern,
+                            _assignmentPattern!,
                             nextValue,
                             iterationEnv,
-                            checkObjectPatternPropertyReference: _lhsKind != LhsKind.VarBinding);
+                            checkPatternPropertyReference: _lhsKind != LhsKind.VarBinding);
+
+                        status = context.Completion;
 
                         if (lhsKind == LhsKind.Assignment)
                         {
@@ -247,22 +254,22 @@ namespace Jint.Runtime.Interpreter.Statements
                         }
                     }
 
-                    if (status.IsAbrupt())
+                    if (status != CompletionType.Normal)
                     {
                         engine.UpdateLexicalEnvironment(oldEnv);
                         if (_iterationKind == IterationKind.AsyncIterate)
                         {
-                            iteratorRecord.Close(status.Type);
-                            return status;
+                            iteratorRecord.Close(status);
+                            return new Completion(status, nextValue, context.LastSyntaxElement);
                         }
 
                         if (iterationKind == IterationKind.Enumerate)
                         {
-                            return status;
+                            return new Completion(status, nextValue, context.LastSyntaxElement);
                         }
 
-                        iteratorRecord.Close(status.Type);
-                        return status;
+                        iteratorRecord.Close(status);
+                        return new Completion(status, nextValue, context.LastSyntaxElement);
                     }
 
                     var result = stmt.Execute(context);
@@ -273,13 +280,13 @@ namespace Jint.Runtime.Interpreter.Statements
                         v = result.Value;
                     }
 
-                    if (result.Type == CompletionType.Break && (result.Target == null || result.Target == _statement?.LabelSet?.Name))
+                    if (result.Type == CompletionType.Break && (context.Target == null || context.Target == _statement?.LabelSet?.Name))
                     {
                         completionType = CompletionType.Normal;
-                        return new Completion(CompletionType.Normal, v, null, Location);
+                        return new Completion(CompletionType.Normal, v, _statement!);
                     }
 
-                    if (result.Type != CompletionType.Continue || (result.Target != null && result.Target != _statement?.LabelSet?.Name))
+                    if (result.Type != CompletionType.Continue || (context.Target != null && context.Target != _statement?.LabelSet?.Name))
                     {
                         completionType = result.Type;
                         if (result.IsAbrupt())

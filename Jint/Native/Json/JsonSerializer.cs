@@ -1,8 +1,12 @@
-﻿using System.Collections.Generic;
-using System.Linq;
 using Jint.Collections;
+using Jint.Native.Array;
+using Jint.Native.BigInt;
+using Jint.Native.Boolean;
 using Jint.Native.Global;
+using Jint.Native.Number;
 using Jint.Native.Object;
+using Jint.Native.Proxy;
+using Jint.Native.String;
 using Jint.Pooling;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -13,10 +17,13 @@ namespace Jint.Native.Json
     public class JsonSerializer
     {
         private readonly Engine _engine;
-        private ObjectTraverseStack _stack;
-        private string _indent, _gap;
-        private List<JsValue> _propertyList;
+        private ObjectTraverseStack _stack = null!;
+        private string? _indent;
+        private string? _gap;
+        private List<JsValue>? _propertyList;
         private JsValue _replacerFunction = Undefined.Instance;
+
+        private static readonly JsString toJsonProperty = new("toJSON");
 
         public JsonSerializer(Engine engine)
         {
@@ -34,46 +41,47 @@ namespace Jint.Native.Json
                 return Undefined.Instance;
             }
 
-            if (replacer.IsObject())
+            if (replacer is ObjectInstance oi)
             {
-                if (replacer is ICallable)
+                if (oi.IsCallable)
                 {
                     _replacerFunction = replacer;
                 }
                 else
                 {
-                    var replacerObj = replacer.AsObject();
-                    if (replacerObj.Class == ObjectClass.Array)
+                    if (oi.IsArray())
                     {
                         _propertyList = new List<JsValue>();
-                    }
-
-                    foreach (var property in replacerObj.GetOwnProperties().Select(x => x.Value))
-                    {
-                        JsValue v = _engine.GetValue(property, false);
-                        string item = null;
-                        if (v.IsString())
+                        var len = oi.Length;
+                        var k = 0;
+                        while (k < len)
                         {
-                            item = v.ToString();
-                        }
-                        else if (v.IsNumber())
-                        {
-                            item = TypeConverter.ToString(v);
-                        }
-                        else if (v.IsObject())
-                        {
-                            var propertyObj = v.AsObject();
-                            if (propertyObj.Class == ObjectClass.String || propertyObj.Class == ObjectClass.Number)
+                            var prop = JsString.Create(k);
+                            var v = replacer.Get(prop);
+                            var item = JsValue.Undefined;
+                            if (v.IsString())
+                            {
+                                item = v;
+                            }
+                            else if (v.IsNumber())
                             {
                                 item = TypeConverter.ToString(v);
                             }
-                        }
+                            else if (v.IsObject())
+                            {
+                                if (v is StringInstance or NumberInstance)
+                                {
+                                    item = TypeConverter.ToString(v);
+                                }
+                            }
 
-                        if (item != null && !_propertyList.Contains(item))
-                        {
-                            _propertyList.Add(item);
-                        }
+                            if (!item.IsUndefined() && !_propertyList.Contains(item))
+                            {
+                                _propertyList.Add(item);
+                            }
 
+                            k++;
+                        }
                     }
                 }
             }
@@ -117,50 +125,48 @@ namespace Jint.Native.Json
             var wrapper = _engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
             wrapper.DefineOwnProperty(JsString.Empty, new PropertyDescriptor(value, PropertyFlag.ConfigurableEnumerableWritable));
 
-            return Str(JsString.Empty, wrapper);
+            return SerializeJSONProperty(JsString.Empty, wrapper);
         }
 
-        private JsValue Str(JsValue key, JsValue holder)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-serializejsonproperty
+        /// </summary>
+        private JsValue SerializeJSONProperty(JsValue key, JsValue holder)
         {
             var value = holder.Get(key, holder);
-            if (value.IsObject())
+            var isBigInt = value is BigIntInstance || value.IsBigInt();
+            if (value.IsObject() || isBigInt)
             {
-                var toJson = value.AsObject().Get("toJSON", value);
+                var toJson = value.GetV(_engine.Realm, toJsonProperty);
+                if (toJson.IsUndefined() && isBigInt)
+                {
+                    toJson = _engine.Realm.Intrinsics.BigInt.PrototypeObject.Get(toJsonProperty);
+                }
                 if (toJson.IsObject())
                 {
                     if (toJson.AsObject() is ICallable callableToJson)
                     {
-                        value = callableToJson.Call(value, Arguments.From(key));
+                        value = callableToJson.Call(value, Arguments.From(TypeConverter.ToPropertyKey(key)));
                     }
                 }
             }
 
-            if (!ReferenceEquals(_replacerFunction, Undefined.Instance))
+            if (!_replacerFunction.IsUndefined())
             {
-                var replacerFunctionCallable = (ICallable)_replacerFunction.AsObject();
-                value = replacerFunctionCallable.Call(holder, Arguments.From(key, value));
+                var replacerFunctionCallable = (ICallable) _replacerFunction.AsObject();
+                value = replacerFunctionCallable.Call(holder, Arguments.From(TypeConverter.ToPropertyKey(key), value));
             }
 
             if (value.IsObject())
             {
-                var valueObj = value.AsObject();
-                switch (valueObj.Class)
+                value = value switch
                 {
-                    case ObjectClass.Number:
-                        value = TypeConverter.ToNumber(value);
-                        break;
-                    case ObjectClass.String:
-                        value = TypeConverter.ToString(value);
-                        break;
-                    case ObjectClass.Boolean:
-                        value = TypeConverter.ToPrimitive(value);
-                        break;
-                    default:
-                        value = SerializesAsArray(value)
-                            ? SerializeArray(value)
-                            : SerializeObject(value.AsObject());
-                        return value;
-                }
+                    NumberInstance => TypeConverter.ToNumber(value),
+                    StringInstance => TypeConverter.ToString(value),
+                    BooleanInstance booleanInstance => booleanInstance.BooleanData,
+                    BigIntInstance bigIntInstance => bigIntInstance.BigIntData,
+                    _ => value
+                };
             }
 
             if (ReferenceEquals(value, Null.Instance))
@@ -175,7 +181,7 @@ namespace Jint.Native.Json
 
             if (value.IsString())
             {
-                return Quote(value.ToString());
+                return QuoteJSONString(value.ToString());
             }
 
             if (value.IsNumber())
@@ -189,31 +195,62 @@ namespace Jint.Native.Json
                 return JsString.NullString;
             }
 
-            var isCallable = value.IsObject() && value.AsObject() is ICallable;
-
-            if (value.IsObject() && isCallable == false)
+            if (value.IsBigInt())
             {
-                return SerializesAsArray(value)
-                    ? SerializeArray(value)
-                    : SerializeObject(value.AsObject());
+                ExceptionHelper.ThrowTypeError(_engine.Realm, "Do not know how to serialize a BigInt");
+            }
+
+            if (value is ObjectInstance { IsCallable: false } objectInstance)
+            {
+                if (SerializesAsArray(objectInstance))
+                {
+                    return SerializeJSONArray(objectInstance);
+                }
+
+                if (objectInstance is IObjectWrapper wrapper
+                    && _engine.Options.Interop.SerializeToJson is { } serialize)
+                {
+                    return serialize(wrapper.Target);
+                }
+
+                return SerializeJSONObject(objectInstance);
             }
 
             return JsValue.Undefined;
         }
 
-        private static bool SerializesAsArray(JsValue value)
+        private static bool SerializesAsArray(ObjectInstance value)
         {
-            return value.AsObject().Class == ObjectClass.Array || value is ObjectWrapper { IsArrayLike: true };
+            if (value is ArrayInstance)
+            {
+                return true;
+            }
+
+            if (value is ProxyInstance proxyInstance && SerializesAsArray(proxyInstance._target))
+            {
+                return true;
+            }
+
+            if (value is ObjectWrapper { IsArrayLike: true })
+            {
+                return true;
+            }
+
+            return false;
         }
 
-        private static string Quote(string value)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-quotejsonstring
+        /// </summary>
+        private static string QuoteJSONString(string value)
         {
             using var stringBuilder = StringBuilderPool.Rent();
             var sb = stringBuilder.Builder;
-            sb.Append("\"");
+            sb.Append('"');
 
-            foreach (var c in value)
+            for (var i = 0; i < value.Length; i++)
             {
+                var c = value[i];
                 switch (c)
                 {
                     case '\"':
@@ -238,31 +275,43 @@ namespace Jint.Native.Json
                         sb.Append("\\t");
                         break;
                     default:
-                        if (c < 0x20)
+                        if (char.IsSurrogatePair(value, i))
+                        {
+                            sb.Append(value[i]);
+                            i++;
+                            sb.Append(value[i]);
+                        }
+                        else if (c < 0x20 || char.IsSurrogate(c))
                         {
                             sb.Append("\\u");
                             sb.Append(((int) c).ToString("x4"));
                         }
                         else
+                        {
                             sb.Append(c);
+                        }
+
                         break;
                 }
             }
 
-            sb.Append("\"");
+            sb.Append('"');
             return sb.ToString();
         }
 
-        private string SerializeArray(JsValue value)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-serializejsonarray
+        /// </summary>
+        private string SerializeJSONArray(ObjectInstance value)
         {
             _stack.Enter(value);
             var stepback = _indent;
-            _indent = _indent + _gap;
+            _indent += _gap;
             var partial = new List<string>();
             var len = TypeConverter.ToUint32(value.Get(CommonProperties.Length, value));
             for (int i = 0; i < len; i++)
             {
-                var strP = Str(i, value);
+                var strP = SerializeJSONProperty(i, value);
                 if (strP.IsUndefined())
                 {
                     strP = JsString.NullString;
@@ -273,6 +322,7 @@ namespace Jint.Native.Json
             if (partial.Count == 0)
             {
                 _stack.Exit();
+                _indent = stepback;
                 return "[]";
             }
 
@@ -295,7 +345,10 @@ namespace Jint.Native.Json
             return final;
         }
 
-        private string SerializeObject(ObjectInstance value)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-serializejsonobject
+        /// </summary>
+        private string SerializeJSONObject(ObjectInstance value)
         {
             string final;
 
@@ -303,17 +356,15 @@ namespace Jint.Native.Json
             var stepback = _indent;
             _indent += _gap;
 
-            var k = _propertyList ?? value.GetOwnProperties()
-                .Where(x => x.Value.Enumerable)
-                .Select(x => x.Key);
+            var k = (IEnumerable<JsValue>?) _propertyList ?? value.EnumerableOwnPropertyNames(ObjectInstance.EnumerableOwnPropertyNamesKind.Key);
 
             var partial = new List<string>();
             foreach (var p in k)
             {
-                var strP = Str(p, value);
+                var strP = SerializeJSONProperty(p, value);
                 if (!strP.IsUndefined())
                 {
-                    var member = Quote(p.ToString()) + ":";
+                    var member = QuoteJSONString(p.ToString()) + ":";
                     if (_gap != "")
                     {
                         member += " ";

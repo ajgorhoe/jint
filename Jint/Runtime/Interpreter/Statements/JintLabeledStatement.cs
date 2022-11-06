@@ -4,8 +4,8 @@ namespace Jint.Runtime.Interpreter.Statements
 {
     internal sealed class JintLabeledStatement : JintStatement<LabeledStatement>
     {
-        private JintStatement _body;
-        private string _labelName;
+        private JintStatement _body = null!;
+        private string? _labelName;
 
         public JintLabeledStatement(LabeledStatement statement) : base(statement)
         {
@@ -23,10 +23,10 @@ namespace Jint.Runtime.Interpreter.Statements
             // containing label and could keep a table per program with all the labels
             // labeledStatement.Body.LabelSet = labeledStatement.Label;
             var result = _body.Execute(context);
-            if (result.Type == CompletionType.Break && result.Target == _labelName)
+            if (result.Type == CompletionType.Break && context.Target == _labelName)
             {
                 var value = result.Value;
-                return new Completion(CompletionType.Normal, value, null, Location);
+                return new Completion(CompletionType.Normal, value, _statement);
             }
 
             return result;

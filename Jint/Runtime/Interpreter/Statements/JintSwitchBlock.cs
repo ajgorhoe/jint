@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-using Esprima;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Runtime.Environments;
@@ -10,7 +8,7 @@ namespace Jint.Runtime.Interpreter.Statements
     internal sealed class JintSwitchBlock
     {
         private readonly NodeList<SwitchCase> _switchBlock;
-        private JintSwitchCase[] _jintSwitchBlock;
+        private JintSwitchCase[] _jintSwitchBlock = Array.Empty<JintSwitchCase>();
         private bool _initialized;
 
         public JintSwitchBlock(NodeList<SwitchCase> switchBlock)
@@ -38,15 +36,15 @@ namespace Jint.Runtime.Interpreter.Statements
 
             var engine = context.Engine;
             JsValue v = Undefined.Instance;
-            Location l = context.LastSyntaxNode.Location;
-            JintSwitchCase defaultCase = null;
+            SyntaxElement l = context.LastSyntaxElement;
+            JintSwitchCase? defaultCase = null;
             bool hit = false;
 
             for (var i = 0; i < (uint) _jintSwitchBlock.Length; i++)
             {
                 var clause = _jintSwitchBlock[i];
 
-                EnvironmentRecord oldEnv = null;
+                EnvironmentRecord? oldEnv = null;
                 if (clause.LexicalDeclarations != null)
                 {
                     oldEnv = engine.ExecutionContext.LexicalEnvironment;
@@ -61,8 +59,8 @@ namespace Jint.Runtime.Interpreter.Statements
                 }
                 else
                 {
-                    var clauseSelector = clause.Test.GetValue(context).Value;
-                    if (JintBinaryExpression.StrictlyEqual(clauseSelector, input))
+                    var clauseSelector = clause.Test.GetValue(context);
+                    if (clauseSelector == input)
                     {
                         hit = true;
                     }
@@ -82,7 +80,7 @@ namespace Jint.Runtime.Interpreter.Statements
                         return r;
                     }
 
-                    l = r.Location;
+                    l = r._source;
                     v = r.Value ?? Undefined.Instance;
                 }
             }
@@ -90,7 +88,7 @@ namespace Jint.Runtime.Interpreter.Statements
             // do we need to execute the default case ?
             if (hit == false && defaultCase != null)
             {
-                EnvironmentRecord oldEnv = null;
+                EnvironmentRecord? oldEnv = null;
                 if (defaultCase.LexicalDeclarations != null)
                 {
                     oldEnv = engine.ExecutionContext.LexicalEnvironment;
@@ -110,18 +108,18 @@ namespace Jint.Runtime.Interpreter.Statements
                     return r;
                 }
 
-                l = r.Location;
+                l = r._source;
                 v = r.Value ?? Undefined.Instance;
             }
 
-            return new Completion(CompletionType.Normal, v, null, l);
+            return new Completion(CompletionType.Normal, v, l);
         }
 
         private sealed class JintSwitchCase
         {
             internal readonly JintStatementList Consequent;
-            internal readonly JintExpression Test;
-            internal readonly List<Declaration> LexicalDeclarations;
+            internal readonly JintExpression? Test;
+            internal readonly List<Declaration>? LexicalDeclarations;
 
             public JintSwitchCase(Engine engine, SwitchCase switchCase)
             {
@@ -130,7 +128,7 @@ namespace Jint.Runtime.Interpreter.Statements
 
                 if (switchCase.Test != null)
                 {
-                    Test = JintExpression.Build(engine, switchCase.Test);
+                    Test = JintExpression.Build(switchCase.Test);
                 }
             }
         }

@@ -3,7 +3,6 @@ using Jint.Native.Array;
 using Jint.Native.Date;
 using Jint.Native.Object;
 using Jint.Native.RegExp;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -55,7 +54,7 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void ShouldBeADate()
         {
-            var value = new DateInstance(_engine);
+            var value = new DateInstance(_engine, double.NaN);
             Assert.Equal(false, value.IsBoolean());
             Assert.Equal(false, value.IsArray());
             Assert.Equal(true, value.IsDate());

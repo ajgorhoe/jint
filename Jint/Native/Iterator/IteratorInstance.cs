@@ -1,6 +1,4 @@
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using Jint.Native.Object;
 using Jint.Native.RegExp;
 using Jint.Runtime;
@@ -12,27 +10,23 @@ namespace Jint.Native.Iterator
     {
         private readonly IEnumerator<JsValue> _enumerable;
 
-        public IteratorInstance(Engine engine)
+        protected IteratorInstance(Engine engine)
             : this(engine, Enumerable.Empty<JsValue>())
         {
         }
 
         public IteratorInstance(
             Engine engine,
-            IEnumerable<JsValue> enumerable) : base(engine, ObjectClass.Iterator)
+            IEnumerable<JsValue> enumerable) : base(engine)
         {
             _enumerable = enumerable.GetEnumerator();
-        }
+            _prototype = engine.Realm.Intrinsics.ArrayIteratorPrototype;
+       }
 
         public override object ToObject()
         {
             ExceptionHelper.ThrowNotImplementedException();
             return null;
-        }
-
-        public override bool Equals(JsValue other)
-        {
-            return false;
         }
 
         public virtual bool TryIteratorStep(out ObjectInstance nextItem)
@@ -63,14 +57,14 @@ namespace Jint.Native.Iterator
         {
             internal static ObjectInstance Done(Engine engine) => new KeyValueIteratorPosition(engine, null, null);
 
-            public KeyValueIteratorPosition(Engine engine, JsValue key, JsValue value) : base(engine)
+            public KeyValueIteratorPosition(Engine engine, JsValue? key, JsValue? value) : base(engine)
             {
                 var done = ReferenceEquals(null, key) && ReferenceEquals(null, value);
                 if (!done)
                 {
-                    var arrayInstance = engine.Realm.Intrinsics.Array.ConstructFast(2);
-                    arrayInstance.SetIndexValue(0, key, false);
-                    arrayInstance.SetIndexValue(1, value, false);
+                    var arrayInstance = engine.Realm.Intrinsics.Array.ArrayCreate(2);
+                    arrayInstance.SetIndexValue(0, key!, false);
+                    arrayInstance.SetIndexValue(1, value!, false);
                     SetProperty("value", new PropertyDescriptor(arrayInstance, PropertyFlag.AllForbidden));
                 }
                 SetProperty("done", done ? PropertyDescriptor.AllForbiddenDescriptor.BooleanTrue : PropertyDescriptor.AllForbiddenDescriptor.BooleanFalse);
@@ -79,7 +73,8 @@ namespace Jint.Native.Iterator
 
         internal sealed class ValueIteratorPosition : ObjectInstance
         {
-            internal static ObjectInstance Done(Engine engine) => new ValueIteratorPosition(engine, Undefined, true);
+            internal static ObjectInstance Done(Engine engine, JsValue? value = null)
+                => new ValueIteratorPosition(engine, value ?? Undefined, true);
 
             public ValueIteratorPosition(Engine engine, JsValue value, bool? done = null) : base(engine)
             {
@@ -91,34 +86,6 @@ namespace Jint.Native.Iterator
             }
         }
 
-        public sealed class ListIterator : IteratorInstance
-        {
-            private readonly List<JsValue> _values;
-            private int _position;
-            private bool _closed;
-
-            public ListIterator(Engine engine, List<JsValue> values) : base(engine)
-            {
-                _values = values;
-                _position = 0;
-            }
-
-            public override bool TryIteratorStep(out ObjectInstance nextItem)
-            {
-                if (!_closed && _position < _values.Count)
-                {
-                    var value = _values[_position];
-                    _position++;
-                    nextItem = new ValueIteratorPosition(_engine, value);
-                    return true;
-                }
-
-                _closed = true;
-                nextItem = KeyValueIteratorPosition.Done(_engine);
-                return false;
-            }
-        }
-
         internal sealed class ObjectIterator : IteratorInstance
         {
             private readonly ObjectInstance _target;
@@ -127,11 +94,12 @@ namespace Jint.Native.Iterator
             public ObjectIterator(ObjectInstance target) : base(target.Engine)
             {
                 _target = target;
-                _nextMethod = target.Get(CommonProperties.Next, target) as ICallable;
-                if (_nextMethod is null)
+                if (target.Get(CommonProperties.Next, target) is not ICallable callable)
                 {
                     ExceptionHelper.ThrowTypeError(target.Engine.Realm);
+                    return;
                 }
+                _nextMethod = callable;
             }
 
             public override bool TryIteratorStep(out ObjectInstance result)
@@ -269,7 +237,7 @@ namespace Jint.Native.Iterator
                 }
 
                 nextItem = CreateIterResultObject(match, false);
-                return false;
+                return true;
             }
         }
     }

@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Runtime.Environments;
@@ -11,14 +10,14 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintForStatement : JintStatement<ForStatement>
     {
-        private JintVariableDeclaration _initStatement;
-        private JintExpression _initExpression;
+        private JintVariableDeclaration? _initStatement;
+        private JintExpression? _initExpression;
 
-        private JintExpression _test;
-        private JintExpression _increment;
+        private JintExpression? _test;
+        private JintExpression? _increment;
 
-        private JintStatement _body;
-        private List<string> _boundNames;
+        private ProbablyBlockStatement _body;
+        private List<string>? _boundNames;
 
         private bool _shouldCreatePerIterationEnvironment;
 
@@ -29,7 +28,7 @@ namespace Jint.Runtime.Interpreter.Statements
         protected override void Initialize(EvaluationContext context)
         {
             var engine = context.Engine;
-            _body = Build(_statement.Body);
+            _body = new ProbablyBlockStatement(_statement.Body);
 
             if (_statement.Init != null)
             {
@@ -46,32 +45,32 @@ namespace Jint.Runtime.Interpreter.Statements
                 }
                 else
                 {
-                    _initExpression = JintExpression.Build(engine, (Expression) _statement.Init);
+                    _initExpression = JintExpression.Build((Expression) _statement.Init);
                 }
             }
 
             if (_statement.Test != null)
             {
-                _test = JintExpression.Build(engine, _statement.Test);
+                _test = JintExpression.Build(_statement.Test);
             }
 
             if (_statement.Update != null)
             {
-                _increment = JintExpression.Build(engine, _statement.Update);
+                _increment = JintExpression.Build(_statement.Update);
             }
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            EnvironmentRecord oldEnv = null;
-            EnvironmentRecord loopEnv = null;
+            EnvironmentRecord? oldEnv = null;
+            EnvironmentRecord? loopEnv = null;
             var engine = context.Engine;
             if (_boundNames != null)
             {
                 oldEnv = engine.ExecutionContext.LexicalEnvironment;
                 loopEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
                 var loopEnvRec = loopEnv;
-                var kind = _initStatement._statement.Kind;
+                var kind = _initStatement!._statement.Kind;
                 for (var i = 0; i < _boundNames.Count; i++)
                 {
                     var name = _boundNames[i];
@@ -122,13 +121,17 @@ namespace Jint.Runtime.Interpreter.Statements
                 CreatePerIterationEnvironment(context);
             }
 
+            var debugHandler = context.DebugMode ? context.Engine.DebugHandler : null;
+
             while (true)
             {
                 if (_test != null)
                 {
-                    if (!TypeConverter.ToBoolean(_test.GetValue(context).Value))
+                    debugHandler?.OnStep(_test._expression);
+
+                    if (!TypeConverter.ToBoolean(_test.GetValue(context)))
                     {
-                        return NormalCompletion(v);
+                        return new Completion(CompletionType.Normal, v, ((JintStatement) this)._statement);
                     }
                 }
 
@@ -138,12 +141,12 @@ namespace Jint.Runtime.Interpreter.Statements
                     v = result.Value;
                 }
 
-                if (result.Type == CompletionType.Break && (result.Target == null || result.Target == _statement?.LabelSet?.Name))
+                if (result.Type == CompletionType.Break && (context.Target == null || context.Target == _statement?.LabelSet?.Name))
                 {
-                    return NormalCompletion(result.Value);
+                    return new Completion(CompletionType.Normal, result.Value!, ((JintStatement) this)._statement);
                 }
 
-                if (result.Type != CompletionType.Continue || (result.Target != null && result.Target != _statement?.LabelSet?.Name))
+                if (result.Type != CompletionType.Continue || (context.Target != null && context.Target != _statement?.LabelSet?.Name))
                 {
                     if (result.Type != CompletionType.Normal)
                     {
@@ -156,24 +159,23 @@ namespace Jint.Runtime.Interpreter.Statements
                     CreatePerIterationEnvironment(context);
                 }
 
-                _increment?.GetValue(context);
+                if (_increment != null)
+                {
+                    debugHandler?.OnStep(_increment._expression);
+                    _increment.Evaluate(context);
+                }
             }
         }
 
         private void CreatePerIterationEnvironment(EvaluationContext context)
         {
-            if (_boundNames == null || _boundNames.Count == 0)
-            {
-                return;
-            }
-
             var engine = context.Engine;
             var lastIterationEnv = engine.ExecutionContext.LexicalEnvironment;
             var lastIterationEnvRec = lastIterationEnv;
             var outer = lastIterationEnv._outerEnv;
             var thisIterationEnv = JintEnvironment.NewDeclarativeEnvironment(engine, outer);
 
-            for (var j = 0; j < _boundNames.Count; j++)
+            for (var j = 0; j < _boundNames!.Count; j++)
             {
                 var bn = _boundNames[j];
                 var lastValue = lastIterationEnvRec.GetBindingValue(bn, true);

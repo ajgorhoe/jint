@@ -1,4 +1,4 @@
-﻿using Jint.Native.Function;
+using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -24,13 +24,13 @@ namespace Jint.Native.WeakSet
 
         public WeakSetPrototype PrototypeObject { get; }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             ExceptionHelper.ThrowTypeError(_realm, "Constructor WeakSet requires 'new'");
             return null;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
             if (newTarget.IsUndefined())
             {
@@ -40,7 +40,8 @@ namespace Jint.Native.WeakSet
             var set = OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.WeakSet.PrototypeObject,
-                static (engine, realm, _) => new WeakSetInstance(engine));
+                static (Engine engine, Realm _, object? _) => new WeakSetInstance(engine));
+
             if (arguments.Length > 0 && !arguments[0].IsNullOrUndefined())
             {
                 var adder = set.Get("add") as ICallable;

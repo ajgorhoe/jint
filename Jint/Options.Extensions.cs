@@ -1,13 +1,10 @@
-#nullable enable
-
-using System;
 using System.Globalization;
-using System.Linq;
 using System.Reflection;
 using Jint.Native;
 using Jint.Runtime;
 using Jint.Runtime.Debugger;
 using Jint.Runtime.Interop;
+using Jint.Runtime.Modules;
 
 namespace Jint
 {
@@ -45,6 +42,15 @@ namespace Jint
         public static Options DebugMode(this Options options, bool debugMode = true)
         {
             options.Debugger.Enabled = debugMode;
+            return options;
+        }
+
+        /// <summary>
+        /// Set initial step mode.
+        /// </summary>
+        public static Options InitialStepMode(this Options options, StepMode initialStepMode = StepMode.None)
+        {
+            options.Debugger.InitialStepMode = initialStepMode;
             return options;
         }
 
@@ -178,7 +184,7 @@ namespace Jint
             return options;
         }
 
-        public static Options Constraint(this Options options, IConstraint constraint)
+        public static Options Constraint(this Options options, Constraint constraint)
         {
             if (constraint != null)
             {
@@ -188,7 +194,7 @@ namespace Jint
             return options;
         }
 
-        public static Options WithoutConstraint(this Options options, Predicate<IConstraint> predicate)
+        public static Options WithoutConstraint(this Options options, Predicate<Constraint> predicate)
         {
             options.Constraints.Constraints.RemoveAll(predicate);
             return options;
@@ -237,9 +243,28 @@ namespace Jint
         /// <remarks>
         /// Passed Engine instance is still in construction and should not be used during call stage.
         /// </remarks>
-        public static void UseHostFactory<T>(this Options options, Func<Engine, T> factory) where T : Host
+        public static Options UseHostFactory<T>(this Options options, Func<Engine, T> factory) where T : Host
         {
             options.Host.Factory = factory;
+            return options;
+        }
+
+        /// <summary>
+        /// Enables module loading in the engine via the 'require' function. By default there's no sand-boxing and
+        /// you need to trust the script loading the modules not doing bad things.
+        /// </summary>
+        public static Options EnableModules(this Options options, string basePath, bool restrictToBasePath = true)
+        {
+            return EnableModules(options, new DefaultModuleLoader(basePath, restrictToBasePath));
+        }
+
+        /// <summary>
+        /// Enables module loading using a custom loader implementation.
+        /// </summary>
+        public static Options EnableModules(this Options options, IModuleLoader moduleLoader)
+        {
+            options.Modules.ModuleLoader = moduleLoader;
+            return options;
         }
     }
 }

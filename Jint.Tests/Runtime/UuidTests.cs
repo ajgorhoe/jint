@@ -1,6 +1,4 @@
 ﻿using Jint.Tests.Runtime.Domain;
-using System;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -43,8 +41,8 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void Copy()
         {
-            var actual = (bool)RunTest($"const g = new Uuid(); copy(g).toString() === g.toString()");
-            Assert.True(actual);
+            _engine.Evaluate("const g = new Uuid();");
+            Assert.Equal(_engine.Evaluate("copy(g).toString()").AsString(), _engine.Evaluate("g.toString()").AsString());
         }
     }
 }

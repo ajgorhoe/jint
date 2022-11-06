@@ -7,12 +7,12 @@ namespace Jint.Runtime.Interpreter.Expressions
     internal sealed class NullishCoalescingExpression : JintExpression
     {
         private readonly JintExpression _left;
-        private readonly JintExpression _right;
-        private readonly JsValue _constant;
+        private readonly JintExpression? _right;
+        private readonly JsValue? _constant;
 
-        public NullishCoalescingExpression(Engine engine, BinaryExpression expression) : base(expression)
+        public NullishCoalescingExpression(BinaryExpression expression) : base(expression)
         {
-            _left = Build(engine, expression.Left);
+            _left = Build(expression.Left);
 
             // we can create a fast path for common literal case like variable ?? 0
             if (expression.Right is Literal l)
@@ -21,30 +21,30 @@ namespace Jint.Runtime.Interpreter.Expressions
             }
             else
             {
-                _right = Build(engine, expression.Right);
+                _right = Build(expression.Right);
             }
         }
 
-        public override Completion GetValue(EvaluationContext context)
+        public override JsValue GetValue(EvaluationContext context)
         {
             // need to notify correct node when taking shortcut
-            context.LastSyntaxNode = _expression;
-            return Completion.Normal(EvaluateConstantOrExpression(context), _expression.Location);
+            context.LastSyntaxElement = _expression;
+            return EvaluateConstantOrExpression(context);
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            return NormalCompletion(EvaluateConstantOrExpression(context));
+            return EvaluateConstantOrExpression(context);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private JsValue EvaluateConstantOrExpression(EvaluationContext context)
         {
-            var left = _left.GetValue(context).Value;
+            var left = _left.GetValue(context);
 
             return !left.IsNullOrUndefined()
                 ? left
-                : _constant ?? _right.GetValue(context).Value;
+                : _constant ?? _right!.GetValue(context);
         }
     }
 }

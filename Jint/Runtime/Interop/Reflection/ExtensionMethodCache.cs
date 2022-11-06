@@ -1,6 +1,3 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using System.Threading;
 using Jint.Extensions;
@@ -48,27 +45,6 @@ namespace Jint.Runtime.Interop.Reflection
 
         public bool HasMethods => _allExtensionMethods.Count > 0;
 
-        private MethodInfo BindMethodGenericParameters(MethodInfo method)
-        {
-            if (method.IsGenericMethodDefinition && method.ContainsGenericParameters)
-            {
-                var methodGenerics = method.GetGenericArguments();
-                var parameterList = Enumerable.Repeat(typeof(object), methodGenerics.Length).ToArray();
-
-                try
-                {
-                    return method.MakeGenericMethod(parameterList);
-                }
-                catch
-                {
-                    // Generic parameter constraints failed probably.
-                    // If it does not work, let it be. We don't need to do anything.
-                }
-            }
-            return method;
-        }
-
-
         public bool TryGetExtensionMethods(Type objectType, out MethodInfo[] methods)
         {
             var methodLookup = _extensionMethods;
@@ -92,7 +68,8 @@ namespace Jint.Runtime.Interop.Reflection
                 }
             }
 
-            methods = results.Select(BindMethodGenericParameters).ToArray();
+			// don't create generic methods bound to an array of object - as this will prevent value types and other generics that don't support covariants/contravariants
+            methods = results.ToArray();
 
             // racy, we don't care, worst case we'll catch up later
             Interlocked.CompareExchange(ref _extensionMethods, new Dictionary<Type, MethodInfo[]>(methodLookup)

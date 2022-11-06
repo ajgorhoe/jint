@@ -9,9 +9,9 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintWhileStatement : JintStatement<WhileStatement>
     {
-        private string _labelSetName;
-        private JintStatement _body;
-        private JintExpression _test;
+        private string? _labelSetName;
+        private ProbablyBlockStatement _body;
+        private JintExpression _test = null!;
 
         public JintWhileStatement(WhileStatement statement) : base(statement)
         {
@@ -20,8 +20,8 @@ namespace Jint.Runtime.Interpreter.Statements
         protected override void Initialize(EvaluationContext context)
         {
             _labelSetName = _statement.LabelSet?.Name;
-            _body = Build(_statement.Body);
-            _test = JintExpression.Build(context.Engine, _statement.Test);
+            _body = new ProbablyBlockStatement(_statement.Body);
+            _test = JintExpression.Build(_statement.Test);
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
@@ -29,10 +29,15 @@ namespace Jint.Runtime.Interpreter.Statements
             var v = Undefined.Instance;
             while (true)
             {
-                var jsValue = _test.GetValue(context).Value;
+                if (context.DebugMode)
+                {
+                    context.Engine.DebugHandler.OnStep(_test._expression);
+                }
+
+                var jsValue = _test.GetValue(context);
                 if (!TypeConverter.ToBoolean(jsValue))
                 {
-                    return new Completion(CompletionType.Normal, v, null, Location);
+                    return new Completion(CompletionType.Normal, v, _statement);
                 }
 
                 var completion = _body.Execute(context);
@@ -42,11 +47,11 @@ namespace Jint.Runtime.Interpreter.Statements
                     v = completion.Value;
                 }
 
-                if (completion.Type != CompletionType.Continue || completion.Target != _labelSetName)
+                if (completion.Type != CompletionType.Continue || context.Target != _labelSetName)
                 {
-                    if (completion.Type == CompletionType.Break && (completion.Target == null || completion.Target == _labelSetName))
+                    if (completion.Type == CompletionType.Break && (context.Target == null || context.Target == _labelSetName))
                     {
-                        return new Completion(CompletionType.Normal, v, null, Location);
+                        return new Completion(CompletionType.Normal, v, _statement);
                     }
 
                     if (completion.Type != CompletionType.Normal)

@@ -1,4 +1,3 @@
-﻿using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -9,11 +8,11 @@ namespace Jint.Native.RegExp
     public class RegExpInstance : ObjectInstance
     {
         internal const string regExpForMatchingAllCharacters = "(?:)";
-        internal static readonly JsString PropertyLastIndex = new JsString("lastIndex");
+        internal static readonly JsString PropertyLastIndex = new("lastIndex");
 
-        private string _flags;
+        private string _flags = null!;
 
-        private PropertyDescriptor _prototypeDescriptor;
+        private PropertyDescriptor _prototypeDescriptor = null!;
 
         public RegExpInstance(Engine engine)
             : base(engine, ObjectClass.RegExp)
@@ -21,7 +20,7 @@ namespace Jint.Native.RegExp
             Source = regExpForMatchingAllCharacters;
         }
 
-        public Regex Value { get; set; }
+        public Regex Value { get; set; } = null!;
         public string Source { get; set; }
 
         public string Flags
@@ -34,6 +33,9 @@ namespace Jint.Native.RegExp
                 {
                     switch (c)
                     {
+                        case 'd':
+                            Indices = true;
+                            break;
                         case 'i':
                             IgnoreCase = true;
                             break;
@@ -52,6 +54,9 @@ namespace Jint.Native.RegExp
                         case 'u':
                             FullUnicode = true;
                             break;
+                        case 'v':
+                            UnicodeSets = true;
+                            break;
                     }
                 }
             }
@@ -59,10 +64,12 @@ namespace Jint.Native.RegExp
 
         public bool DotAll { get; private set; }
         public bool Global { get; private set; }
+        public bool Indices { get; private set; }
         public bool IgnoreCase { get; private set; }
         public bool Multiline { get; private set; }
         public bool Sticky { get; private set; }
         public bool FullUnicode { get; private set; }
+        public bool UnicodeSets { get; private set; }
 
         public override PropertyDescriptor GetOwnProperty(JsValue property)
         {
@@ -108,16 +115,6 @@ namespace Jint.Native.RegExp
 
             keys.AddRange(base.GetOwnPropertyKeys(types));
             return keys;
-        }
-
-        public override bool HasOwnProperty(JsValue property)
-        {
-            if (property == PropertyLastIndex)
-            {
-                return _prototypeDescriptor != null;
-            }
-
-            return base.HasOwnProperty(property);
         }
     }
 }

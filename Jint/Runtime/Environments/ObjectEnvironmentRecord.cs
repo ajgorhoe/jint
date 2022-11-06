@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using Jint.Native;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -45,16 +45,33 @@ namespace Jint.Runtime.Environments
             return !IsBlocked(name);
         }
 
+        internal override bool HasBinding(BindingName name)
+        {
+            var foundBinding = HasProperty(name.StringValue);
+
+            if (!foundBinding)
+            {
+                return false;
+            }
+
+            if (!_withEnvironment)
+            {
+                return true;
+            }
+
+            return !IsBlocked(name.StringValue);
+        }
+
         private bool HasProperty(JsValue property)
         {
             return _bindingObject.HasProperty(property);
         }
 
         internal override bool TryGetBinding(
-            in BindingName name,
+            BindingName name,
             bool strict,
             out Binding binding,
-            out JsValue value)
+            [NotNullWhen(true)] out JsValue? value)
         {
             // we unwrap by name
             binding = default;
@@ -96,27 +113,13 @@ namespace Jint.Runtime.Environments
         /// </summary>
         public override void CreateMutableBinding(string name, bool canBeDeleted = false)
         {
-            var propertyDescriptor = canBeDeleted
-                ? new PropertyDescriptor(Undefined, PropertyFlag.ConfigurableEnumerableWritable | PropertyFlag.MutableBinding)
-                : new PropertyDescriptor(Undefined, PropertyFlag.NonConfigurable | PropertyFlag.MutableBinding);
-
-            _bindingObject.DefinePropertyOrThrow(name, propertyDescriptor);
+            _bindingObject.DefinePropertyOrThrow(name, new PropertyDescriptor(Undefined, canBeDeleted
+                ? PropertyFlag.ConfigurableEnumerableWritable | PropertyFlag.MutableBinding
+                : PropertyFlag.NonConfigurable | PropertyFlag.MutableBinding));
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/6.0/#sec-object-environment-records-createmutablebinding-n-d
-        /// </summary>
-        internal void CreateMutableBindingAndInitialize(string name, JsValue value, bool canBeDeleted = false)
-        {
-            var propertyDescriptor = canBeDeleted
-                ? new PropertyDescriptor(value, PropertyFlag.ConfigurableEnumerableWritable | PropertyFlag.MutableBinding)
-                : new PropertyDescriptor(value, PropertyFlag.NonConfigurable | PropertyFlag.MutableBinding);
-
-            _bindingObject.DefinePropertyOrThrow(name, propertyDescriptor);
-        }
-
-        /// <summary>
-        ///  http://www.ecma-international.org/ecma-262/6.0/#sec-object-environment-records-createimmutablebinding-n-s
+        /// https://tc39.es/ecma262/#sec-object-environment-records-createimmutablebinding-n-s
         /// </summary>
         public override void CreateImmutableBinding(string name, bool strict = true)
         {
@@ -124,7 +127,7 @@ namespace Jint.Runtime.Environments
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/6.0/#sec-object-environment-records-initializebinding-n-v
+        /// https://tc39.es/ecma262/#sec-object-environment-records-initializebinding-n-v
         /// </summary>
         public override void InitializeBinding(string name, JsValue value)
         {
@@ -133,15 +136,23 @@ namespace Jint.Runtime.Environments
 
         public override void SetMutableBinding(string name, JsValue value, bool strict)
         {
-            SetMutableBinding(new BindingName(name), value, strict);
+            var jsString = new JsString(name);
+            if (strict && !_bindingObject.HasProperty(jsString))
+            {
+                ExceptionHelper.ThrowReferenceNameError(_engine.Realm, name);
+            }
+
+            _bindingObject.Set(jsString, value);
         }
 
-        internal override void SetMutableBinding(in BindingName name, JsValue value, bool strict)
+        internal override void SetMutableBinding(BindingName name, JsValue value, bool strict)
         {
-            if (!_bindingObject.Set(name.StringValue, value) && strict)
+            if (strict && !_bindingObject.HasProperty(name.StringValue))
             {
-                ExceptionHelper.ThrowTypeError(_engine.Realm);
+                ExceptionHelper.ThrowReferenceNameError(_engine.Realm, name.Key);
             }
+
+            _bindingObject.Set(name.StringValue, value);
         }
 
         public override JsValue GetBindingValue(string name, bool strict)
@@ -149,10 +160,23 @@ namespace Jint.Runtime.Environments
             var desc = _bindingObject.GetProperty(name);
             if (strict && desc == PropertyDescriptor.Undefined)
             {
-                ExceptionHelper.ThrowReferenceError(_engine.Realm, name);
+                ExceptionHelper.ThrowReferenceNameError(_engine.Realm, name);
             }
 
             return ObjectInstance.UnwrapJsValue(desc, _bindingObject);
+        }
+
+        internal override bool TryGetBindingValue(string name, bool strict, [NotNullWhen(true)] out JsValue? value)
+        {
+            var desc = _bindingObject.GetProperty(name);
+            if (strict && desc == PropertyDescriptor.Undefined)
+            {
+                value = null;
+                return false;
+            }
+
+            value = ObjectInstance.UnwrapJsValue(desc, _bindingObject);
+            return true;
         }
 
         public override bool DeleteBinding(string name)
@@ -171,20 +195,25 @@ namespace Jint.Runtime.Environments
         {
             if (!ReferenceEquals(_bindingObject, null))
             {
-                return _bindingObject.GetOwnProperties().Select( x=> x.Key.ToString()).ToArray();
+                var names = new List<string>(_bindingObject._properties?.Count ?? 0);
+                foreach (var name in _bindingObject.GetOwnProperties())
+                {
+                    names.Add(name.Key.ToString());
+                }
+                return names.ToArray();
             }
 
-            return System.Array.Empty<string>();
+            return Array.Empty<string>();
         }
 
-        public override bool Equals(JsValue other)
+        public override bool Equals(JsValue? other)
         {
             return ReferenceEquals(_bindingObject, other);
         }
 
         public override JsValue GetThisBinding()
         {
-            throw new System.NotImplementedException();
+            throw new NotImplementedException();
         }
     }
 }

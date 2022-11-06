@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.ArrayBuffer;
@@ -12,7 +9,6 @@ using Jint.Pooling;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
-using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Native.TypedArray
 {
@@ -23,7 +19,7 @@ namespace Jint.Native.TypedArray
     {
         private readonly Realm _realm;
         private readonly IntrinsicTypedArrayConstructor _constructor;
-        private ClrFunctionInstance _originalIteratorFunction;
+        private ClrFunctionInstance? _originalIteratorFunction;
 
         internal IntrinsicTypedArrayPrototype(
             Engine engine,
@@ -40,7 +36,7 @@ namespace Jint.Native.TypedArray
         {
             const PropertyFlag lengthFlags = PropertyFlag.Configurable;
             const PropertyFlag propertyFlags = PropertyFlag.Writable | PropertyFlag.Configurable;
-            var properties = new PropertyDictionary(31, false)
+            var properties = new PropertyDictionary(33, false)
             {
                 ["buffer"] = new GetSetPropertyDescriptor(new ClrFunctionInstance(_engine, "get buffer", Buffer, 0, lengthFlags), Undefined, PropertyFlag.Configurable),
                 ["byteLength"] = new GetSetPropertyDescriptor(new ClrFunctionInstance(_engine, "get byteLength", ByteLength, 0, lengthFlags), Undefined, PropertyFlag.Configurable),
@@ -54,6 +50,8 @@ namespace Jint.Native.TypedArray
                 ["filter"] = new(new ClrFunctionInstance(Engine, "filter", Filter, 1, PropertyFlag.Configurable), propertyFlags),
                 ["find"] = new(new ClrFunctionInstance(Engine, "find", Find, 1, PropertyFlag.Configurable), propertyFlags),
                 ["findIndex"] = new(new ClrFunctionInstance(Engine, "findIndex", FindIndex, 1, PropertyFlag.Configurable), propertyFlags),
+                ["findLast"] = new(new ClrFunctionInstance(Engine, "findLast", FindLast, 1, PropertyFlag.Configurable), propertyFlags),
+                ["findLastIndex"] = new(new ClrFunctionInstance(Engine, "findLastIndex", FindLastIndex, 1, PropertyFlag.Configurable), propertyFlags),
                 ["forEach"] = new(new ClrFunctionInstance(Engine, "forEach", ForEach, 1, PropertyFlag.Configurable), propertyFlags),
                 ["includes"] = new(new ClrFunctionInstance(Engine, "includes", Includes, 1, PropertyFlag.Configurable), propertyFlags),
                 ["indexOf"] = new(new ClrFunctionInstance(Engine, "indexOf", IndexOf, 1, PropertyFlag.Configurable), propertyFlags),
@@ -310,12 +308,19 @@ namespace Jint.Native.TypedArray
         {
             var o = thisObj.ValidateTypedArray(_realm);
 
+            var jsValue = arguments.At(0);
             var start = arguments.At(1);
             var end = arguments.At(2);
 
-            var value = o._contentType == TypedArrayContentType.BigInt
-                ? TypeConverter.ToBigInt(arguments.At(0))
-                : TypeConverter.ToNumber(arguments.At(0));
+            JsValue value;
+            if (o._contentType == TypedArrayContentType.BigInt)
+            {
+                value = JsBigInt.Create(jsValue.ToBigInteger(_engine));
+            }
+            else
+            {
+                value = JsNumber.Create(jsValue);
+            }
 
             var len = o.Length;
 
@@ -415,25 +420,52 @@ namespace Jint.Native.TypedArray
             return DoFind(thisObj, arguments).Key;
         }
 
-        private KeyValuePair<JsValue, JsValue> DoFind(JsValue thisObj, JsValue[] arguments)
+        private JsValue FindLast(JsValue thisObj, JsValue[] arguments)
+        {
+            return DoFind(thisObj, arguments, fromEnd: true).Value;
+        }
+
+        private JsValue FindLastIndex(JsValue thisObj, JsValue[] arguments)
+        {
+            return DoFind(thisObj, arguments, fromEnd: true).Key;
+        }
+
+        private KeyValuePair<JsValue, JsValue> DoFind(JsValue thisObj, JsValue[] arguments, bool fromEnd = false)
         {
             var o = thisObj.ValidateTypedArray(_realm);
-            var len = o.Length;
+            var len = (int) o.Length;
 
             var predicate = GetCallable(arguments.At(0));
             var thisArg = arguments.At(1);
 
             var args = _engine._jsValueArrayPool.RentArray(3);
             args[2] = o;
-            for (var k = 0; k < len; k++)
+            if (!fromEnd)
             {
-                var kNumber = JsNumber.Create(k);
-                var kValue = o[k];
-                args[0] = kValue;
-                args[1] = kNumber;
-                if (TypeConverter.ToBoolean(predicate.Call(thisArg, args)))
+                for (var k = 0; k < len; k++)
                 {
-                    return new KeyValuePair<JsValue, JsValue>(kNumber, kValue);
+                    var kNumber = JsNumber.Create(k);
+                    var kValue = o[k];
+                    args[0] = kValue;
+                    args[1] = kNumber;
+                    if (TypeConverter.ToBoolean(predicate.Call(thisArg, args)))
+                    {
+                        return new KeyValuePair<JsValue, JsValue>(kNumber, kValue);
+                    }
+                }
+            }
+            else
+            {
+                for (var k = len - 1; k >= 0; k--)
+                {
+                    var kNumber = JsNumber.Create(k);
+                    var kValue = o[k];
+                    args[0] = kValue;
+                    args[1] = kNumber;
+                    if (TypeConverter.ToBoolean(predicate.Call(thisArg, args)))
+                    {
+                        return new KeyValuePair<JsValue, JsValue>(kNumber, kValue);
+                    }
                 }
             }
 
@@ -509,7 +541,7 @@ namespace Jint.Native.TypedArray
             while (k < len)
             {
                 var value = o[(int) k];
-                if (JintBinaryExpression.SameValueZero(value, searchElement))
+                if (SameValueZeroComparer.Equals(value, searchElement))
                 {
                     return JsBoolean.True;
                 }
@@ -565,8 +597,7 @@ namespace Jint.Native.TypedArray
                 if (kPresent)
                 {
                     var elementK = o[(int) k];
-                    var same = JintBinaryExpression.StrictlyEqual(elementK, searchElement);
-                    if (same)
+                    if (elementK == searchElement)
                     {
                         return k;
                     }
@@ -664,8 +695,7 @@ namespace Jint.Native.TypedArray
                 if (kPresent)
                 {
                     var elementK = o[(int) k];
-                    var same = JintBinaryExpression.StrictlyEqual(elementK, searchElement);
-                    if (same)
+                    if (elementK == searchElement)
                     {
                         return k;
                     }
@@ -839,7 +869,7 @@ namespace Jint.Native.TypedArray
             }
             else
             {
-                SetTypedArrayFromArrayLike(target, targetOffset, source);
+                SetTypedArrayFromArrayLike(target, (int) targetOffset, source);
             }
 
             return Undefined;
@@ -897,7 +927,7 @@ namespace Jint.Native.TypedArray
             if (same)
             {
                 var srcByteLength = source._byteLength;
-                srcBuffer = srcBuffer.CloneArrayBuffer(_realm.Intrinsics.ArrayBuffer, srcByteOffset, srcByteLength, _realm.Intrinsics.ArrayBuffer);
+                srcBuffer = srcBuffer.CloneArrayBuffer(_realm.Intrinsics.ArrayBuffer, srcByteOffset, srcByteLength);
                 // %ArrayBuffer% is used to clone srcBuffer because is it known to not have any observable side-effects.
                 srcByteIndex = 0;
             }
@@ -935,15 +965,12 @@ namespace Jint.Native.TypedArray
         /// <summary>
         /// https://tc39.es/ecma262/#sec-settypedarrayfromarraylike
         /// </summary>
-        private void SetTypedArrayFromArrayLike(TypedArrayInstance target, double targetOffset, JsValue source)
+        private void SetTypedArrayFromArrayLike(TypedArrayInstance target, int targetOffset, JsValue source)
         {
             var targetBuffer = target._viewedArrayBuffer;
             targetBuffer.AssertNotDetached();
 
             var targetLength = target._arrayLength;
-            var targetElementSize = target._arrayElementType.GetElementSize();
-            var targetType = target._arrayElementType;
-            var targetByteOffset = target._byteOffset;
             var src = ArrayOperations.For(TypeConverter.ToObject(_realm, source));
             var srcLength = src.GetLength();
 
@@ -957,26 +984,12 @@ namespace Jint.Native.TypedArray
                 ExceptionHelper.ThrowRangeError(_realm, "Invalid target offset");
             }
 
-            var targetByteIndex = targetOffset * targetElementSize + targetByteOffset;
-            ulong k = 0;
-            var limit = targetByteIndex + targetElementSize * srcLength;
-
-            while (targetByteIndex < limit)
+            var k = 0;
+            while (k < srcLength)
             {
-                double value;
-                if (target._contentType == TypedArrayContentType.BigInt)
-                {
-                    value = TypeConverter.ToBigInt(src.Get(k));
-                }
-                else
-                {
-                    value = TypeConverter.ToNumber(src.Get(k));
-                }
-
-                targetBuffer.AssertNotDetached();
-                targetBuffer.SetValueInBuffer((int) targetByteIndex, targetType, value, true, ArrayBufferOrder.Unordered);
+                var jsValue = src.Get((ulong) k);
+                target.IntegerIndexedElementSet(targetOffset + k, jsValue);
                 k++;
-                targetByteIndex += targetElementSize;
             }
         }
 
@@ -1084,8 +1097,8 @@ namespace Jint.Native.TypedArray
                     var limit = targetByteIndex + count * elementSize;
                     while (targetByteIndex < limit)
                     {
-                        var value = (JsNumber) srcBuffer.GetValueFromBuffer(srcByteIndex, TypedArrayElementType.Uint8, true, ArrayBufferOrder.Unordered);
-                        targetBuffer.SetValueInBuffer(targetByteIndex, TypedArrayElementType.Uint8, value._value, true, ArrayBufferOrder.Unordered);
+                        var value = srcBuffer.GetValueFromBuffer(srcByteIndex, TypedArrayElementType.Uint8, true, ArrayBufferOrder.Unordered);
+                        targetBuffer.SetValueInBuffer(targetByteIndex, TypedArrayElementType.Uint8, value, true, ArrayBufferOrder.Unordered);
                         srcByteIndex++;
                         targetByteIndex++;
                     }
@@ -1138,7 +1151,7 @@ namespace Jint.Native.TypedArray
             var len = obj.Length;
 
             var compareArg = arguments.At(0);
-            ICallable compareFn = null;
+            ICallable? compareFn = null;
             if (!compareArg.IsUndefined())
             {
                 compareFn = GetCallable(compareArg);
@@ -1315,16 +1328,16 @@ namespace Jint.Native.TypedArray
 
         private sealed class TypedArrayComparer : IComparer<JsValue>
         {
-            public static TypedArrayComparer WithFunction(ArrayBufferInstance buffer, ICallable compare)
+            public static TypedArrayComparer WithFunction(ArrayBufferInstance buffer, ICallable? compare)
             {
                 return new TypedArrayComparer(buffer, compare);
             }
 
             private readonly ArrayBufferInstance _buffer;
-            private readonly ICallable _compare;
+            private readonly ICallable? _compare;
             private readonly JsValue[] _comparableArray = new JsValue[2];
 
-            private TypedArrayComparer(ArrayBufferInstance buffer, ICallable compare)
+            private TypedArrayComparer(ArrayBufferInstance buffer, ICallable? compare)
             {
                 _buffer = buffer;
                 _compare = compare;
@@ -1338,7 +1351,6 @@ namespace Jint.Native.TypedArray
                     _comparableArray[1] = y;
 
                     var v = TypeConverter.ToNumber(_compare.Call(Undefined, _comparableArray));
-                    _buffer.AssertNotDetached();
 
                     if (double.IsNaN(v))
                     {
@@ -1346,6 +1358,13 @@ namespace Jint.Native.TypedArray
                     }
 
                     return (int) v;
+                }
+
+                if (x.Type == Types.BigInt || y.Type == Types.BigInt)
+                {
+                    var xBigInt = TypeConverter.ToBigInt(x);
+                    var yBigInt = TypeConverter.ToBigInt(y);
+                    return xBigInt.CompareTo(yBigInt);
                 }
 
                 var xValue = x.AsNumber();

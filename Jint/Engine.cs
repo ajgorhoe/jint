@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using Esprima;
 using Esprima.Ast;
 using Jint.Native;
@@ -23,60 +21,57 @@ using Jint.Runtime.References;
 
 namespace Jint
 {
-    public partial class Engine
+    public sealed partial class Engine : IDisposable
     {
-        private static readonly ParserOptions DefaultParserOptions = new("<anonymous>")
-        {
-            AdaptRegexp = true,
-            Tolerant = true
-        };
+        private readonly JavaScriptParser _defaultParser = new(ParserOptions.Default);
 
-        private readonly ExecutionContextStack _executionContexts;
+        internal readonly ExecutionContextStack _executionContexts;
         private JsValue _completionValue = JsValue.Undefined;
-        internal EvaluationContext _activeEvaluationContext;
+        internal EvaluationContext? _activeEvaluationContext;
 
         private readonly EventLoop _eventLoop = new();
 
+        private readonly Agent _agent = new Agent();
+
         // lazy properties
-        private DebugHandler _debugHandler;
+        private DebugHandler? _debugHandler;
 
         // cached access
-        internal readonly IObjectConverter[] _objectConverters;
-        private readonly IConstraint[] _constraints;
+        internal readonly IObjectConverter[]? _objectConverters;
+        internal readonly Constraint[] _constraints;
         internal readonly bool _isDebugMode;
-        internal readonly bool _isStrict;
+        internal bool _isStrict;
         internal readonly IReferenceResolver _referenceResolver;
         internal readonly ReferencePool _referencePool;
         internal readonly ArgumentsInstancePool _argumentsInstancePool;
         internal readonly JsValueArrayPool _jsValueArrayPool;
         internal readonly ExtensionMethodCache _extensionMethods;
 
-        public ITypeConverter ClrTypeConverter { get; internal set; }
+        public ITypeConverter ClrTypeConverter { get; internal set; } = null!;
 
         // cache of types used when resolving CLR type names
-        internal readonly Dictionary<string, Type> TypeCache = new();
+        internal readonly Dictionary<string, Type?> TypeCache = new();
 
-        // shared frozen version
-        internal readonly PropertyDescriptor _callerCalleeArgumentsThrowerConfigurable;
-        internal readonly PropertyDescriptor _callerCalleeArgumentsThrowerNonConfigurable;
+        // cache for already wrapped CLR objects to keep object identity
+        internal readonly ConditionalWeakTable<object, ObjectInstance> _objectWrapperCache = new();
 
         internal readonly JintCallStack CallStack;
 
         // needed in initial engine setup, for example CLR function construction
-        internal Intrinsics _originalIntrinsics;
-        internal Host _host;
+        internal Intrinsics _originalIntrinsics = null!;
+        internal Host _host = null!;
 
         /// <summary>
         /// Constructs a new engine instance.
         /// </summary>
-        public Engine() : this((Action<Options>) null)
+        public Engine() : this((Action<Options>?) null)
         {
         }
 
         /// <summary>
         /// Constructs a new engine instance and allows customizing options.
         /// </summary>
-        public Engine(Action<Options> options)
+        public Engine(Action<Options>? options)
             : this((engine, opts) => options?.Invoke(opts))
         {
         }
@@ -96,13 +91,6 @@ namespace Jint
         {
             _executionContexts = new ExecutionContextStack(2);
 
-            _callerCalleeArgumentsThrowerConfigurable = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(this,
-                PropertyFlag.Configurable | PropertyFlag.CustomJsValue,
-                "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-            _callerCalleeArgumentsThrowerNonConfigurable = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(this,
-                PropertyFlag.CustomJsValue,
-                "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-
             Options = new Options();
             options?.Invoke(this, Options);
 
@@ -120,13 +108,14 @@ namespace Jint
 
             _constraints = Options.Constraints.Constraints.ToArray();
             _referenceResolver = Options.ReferenceResolver;
-            CallStack = new JintCallStack(Options.Constraints.MaxRecursionDepth >= 0);
 
             _referencePool = new ReferencePool();
             _argumentsInstancePool = new ArgumentsInstancePool(this);
             _jsValueArrayPool = new JsValueArrayPool();
 
             Options.Apply(this);
+
+            CallStack = new JintCallStack(Options.Constraints.MaxRecursionDepth >= 0);
         }
 
         private void Reset()
@@ -143,7 +132,7 @@ namespace Jint
 
         // temporary state for realm so that we can easily pass it to functions while still not
         // having a proper execution context established
-        internal Realm _realmInConstruction;
+        internal Realm? _realmInConstruction;
 
         public Realm Realm => _realmInConstruction ?? ExecutionContext.Realm;
 
@@ -158,16 +147,17 @@ namespace Jint
             private set;
         }
 
-        public DebugHandler DebugHandler => _debugHandler ??= new DebugHandler(this);
+        public DebugHandler DebugHandler => _debugHandler ??= new DebugHandler(this, Options.Debugger.InitialStepMode);
 
 
         internal ExecutionContext EnterExecutionContext(
             EnvironmentRecord lexicalEnvironment,
             EnvironmentRecord variableEnvironment,
             Realm realm,
-            PrivateEnvironmentRecord privateEnvironment)
+            PrivateEnvironmentRecord? privateEnvironment)
         {
             var context = new ExecutionContext(
+                null,
                 lexicalEnvironment,
                 variableEnvironment,
                 privateEnvironment,
@@ -178,7 +168,7 @@ namespace Jint
             return context;
         }
 
-        internal ExecutionContext EnterExecutionContext(ExecutionContext context)
+        internal ExecutionContext EnterExecutionContext(in ExecutionContext context)
         {
             _executionContexts.Push(context);
             return context;
@@ -249,64 +239,106 @@ namespace Jint
             CallStack.Clear();
         }
 
-        public JsValue Evaluate(string source)
-            => Execute(source, DefaultParserOptions)._completionValue;
+        public JsValue Evaluate(string code)
+            => Evaluate(code, "<anonymous>", ParserOptions.Default);
 
-        public JsValue Evaluate(string source, ParserOptions parserOptions)
-            => Execute(source, parserOptions)._completionValue;
+        public JsValue Evaluate(string code, string source)
+            => Evaluate(code, source, ParserOptions.Default);
+
+        public JsValue Evaluate(string code, ParserOptions parserOptions)
+            => Evaluate(code, "<anonymous>", parserOptions);
+
+        public JsValue Evaluate(string code, string source, ParserOptions parserOptions)
+        {
+            var parser = ReferenceEquals(ParserOptions.Default, parserOptions)
+                ? _defaultParser
+                : new JavaScriptParser(parserOptions);
+
+            var script = parser.ParseScript(code, source);
+
+            return Evaluate(script);
+        }
 
         public JsValue Evaluate(Script script)
             => Execute(script)._completionValue;
 
-        public Engine Execute(string source)
-            => Execute(source, DefaultParserOptions);
+        public Engine Execute(string code, string? source = null)
+            => Execute(code, source ?? "<anonymous>", ParserOptions.Default);
 
-        public Engine Execute(string source, ParserOptions parserOptions)
-            => Execute(new JavaScriptParser(source, parserOptions).ParseScript());
+        public Engine Execute(string code, ParserOptions parserOptions)
+            => Execute(code, "<anonymous>", parserOptions);
+
+        public Engine Execute(string code, string source, ParserOptions parserOptions)
+        {
+            var parser = ReferenceEquals(ParserOptions.Default, parserOptions)
+                ? _defaultParser
+                : new JavaScriptParser(parserOptions);
+
+            var script = parser.ParseScript(code, source);
+
+            return Execute(script);
+        }
 
         public Engine Execute(Script script)
         {
-            Engine DoInvoke()
-            {
-                using (new StrictModeScope(_isStrict || script.Strict))
-                {
-                    GlobalDeclarationInstantiation(
-                        script,
-                        Realm.GlobalEnv);
-
-                    var list = new JintStatementList(null, script.Body);
-
-                    Completion result;
-                    try
-                    {
-                        result = list.Execute(_activeEvaluationContext);
-                    }
-                    catch
-                    {
-                        // unhandled exception
-                        ResetCallStack();
-                        throw;
-                    }
-
-                    if (result.Type == CompletionType.Throw)
-                    {
-                        var ex = new JavaScriptException(result.GetValueOrDefault()).SetCallstack(this, result.Location);
-                        ResetCallStack();
-                        throw ex;
-                    }
-
-                    // TODO what about callstack and thrown exceptions?
-                    RunAvailableContinuations(_eventLoop);
-
-                    _completionValue = result.GetValueOrDefault();
-
-                    return this;
-                }
-            }
-
-            ExecuteWithConstraints(DoInvoke);
+            var strict = _isStrict || script.Strict;
+            ExecuteWithConstraints(strict, () => ScriptEvaluation(new ScriptRecord(Realm, script, string.Empty)));
 
             return this;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation
+        /// </summary>
+        private Engine ScriptEvaluation(ScriptRecord scriptRecord)
+        {
+            var globalEnv = Realm.GlobalEnv;
+
+            var scriptContext = new ExecutionContext(
+                scriptRecord,
+                lexicalEnvironment: globalEnv,
+                variableEnvironment: globalEnv,
+                privateEnvironment: null,
+                Realm);
+
+            EnterExecutionContext(scriptContext);
+            try
+            {
+                var script = scriptRecord.EcmaScriptCode;
+                GlobalDeclarationInstantiation(script, globalEnv);
+
+                var list = new JintStatementList(null, script.Body);
+
+                Completion result;
+                try
+                {
+                    result = list.Execute(_activeEvaluationContext!);
+                }
+                catch
+                {
+                    // unhandled exception
+                    ResetCallStack();
+                    throw;
+                }
+
+                if (result.Type == CompletionType.Throw)
+                {
+                    var ex = new JavaScriptException(result.GetValueOrDefault()).SetJavaScriptCallstack(this, result.Location);
+                    ResetCallStack();
+                    throw ex;
+                }
+
+                // TODO what about callstack and thrown exceptions?
+                RunAvailableContinuations();
+
+                _completionValue = result.GetValueOrDefault();
+
+                return this;
+            }
+            finally
+            {
+                LeaveExecutionContext();
+            }
         }
 
         /// <summary>
@@ -332,7 +364,7 @@ namespace Jint
             Action<JsValue> SettleWith(FunctionInstance settle) => value =>
             {
                 settle.Call(JsValue.Undefined, new[] {value});
-                RunAvailableContinuations(_eventLoop);
+                RunAvailableContinuations();
             };
 
             return new ManualPromise(promise, SettleWith(resolve), SettleWith(reject));
@@ -343,10 +375,14 @@ namespace Jint
             _eventLoop.Events.Enqueue(continuation);
         }
 
-
-        private static void RunAvailableContinuations(EventLoop loop)
+        internal void AddToKeptObjects(JsValue target)
         {
-            var queue = loop.Events;
+            _agent.AddToKeptObjects(target);
+        }
+
+        internal void RunAvailableContinuations()
+        {
+            var queue = _eventLoop.Events;
 
             while (true)
             {
@@ -362,7 +398,7 @@ namespace Jint
             }
         }
 
-        internal void RunBeforeExecuteStatementChecks(Statement statement)
+        internal void RunBeforeExecuteStatementChecks(Statement? statement)
         {
             // Avoid allocating the enumerator because we run this loop very often.
             foreach (var constraint in _constraints)
@@ -370,16 +406,13 @@ namespace Jint
                 constraint.Check();
             }
 
-            if (_isDebugMode)
+            if (_isDebugMode && statement != null && statement.Type != Nodes.BlockStatement)
             {
                 DebugHandler.OnStep(statement);
             }
         }
 
-        /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-8.7.1
-        /// </summary>
-        public JsValue GetValue(object value)
+        internal JsValue GetValue(object value)
         {
             return GetValue(value, false);
         }
@@ -405,7 +438,7 @@ namespace Jint
 
             if (baseValue.IsUndefined())
             {
-                if (_referenceResolver.TryUnresolvableReference(this, reference, out JsValue val))
+                if (_referenceResolver.TryUnresolvableReference(this, reference, out var val))
                 {
                     return val;
                 }
@@ -437,7 +470,7 @@ namespace Jint
                 {
                     // check if we are accessing a string, boxing operation can be costly to do index access
                     // we have good chance to have fast path with integer or string indexer
-                    ObjectInstance o = null;
+                    ObjectInstance? o = null;
                     if ((property._type & (InternalTypes.String | InternalTypes.Integer)) != 0
                         && baseValue is JsString s
                         && TryHandleStringValue(property, s, ref o, out var jsValue))
@@ -461,7 +494,7 @@ namespace Jint
                         return desc.Value;
                     }
 
-                    var getter = desc.Get;
+                    var getter = desc.Get!;
                     if (getter.IsUndefined())
                     {
                         return Undefined.Instance;
@@ -488,7 +521,7 @@ namespace Jint
             return bindingValue;
         }
 
-        private bool TryHandleStringValue(JsValue property, JsString s, ref ObjectInstance o, out JsValue jsValue)
+        private bool TryHandleStringValue(JsValue property, JsString s, ref ObjectInstance? o, out JsValue jsValue)
         {
             if (property == CommonProperties.Length)
             {
@@ -547,23 +580,13 @@ namespace Jint
                 var succeeded = baseValue.Set(reference.GetReferencedName(), value, reference.GetThisValue());
                 if (!succeeded && reference.IsStrictReference())
                 {
-                    ExceptionHelper.ThrowTypeError(Realm);
+                    ExceptionHelper.ThrowTypeError(Realm, "Cannot assign to read only property '" + reference.GetReferencedName() + "' of " + baseValue);
                 }
             }
             else
             {
-                ((EnvironmentRecord) baseValue).SetMutableBinding(TypeConverter.ToString(reference.GetReferencedName()),
-                    value, reference.IsStrictReference());
+                ((EnvironmentRecord) baseValue).SetMutableBinding(TypeConverter.ToString(reference.GetReferencedName()), value, reference.IsStrictReference());
             }
-        }
-
-        /// <summary>
-        /// http://www.ecma-international.org/ecma-262/6.0/#sec-initializereferencedbinding
-        /// </summary>
-        public void InitializeReferenceBinding(Reference reference, JsValue value)
-        {
-            var baseValue = (EnvironmentRecord) reference.GetBase();
-            baseValue.InitializeBinding(TypeConverter.ToString(reference.GetReferencedName()), value);
         }
 
         /// <summary>
@@ -584,7 +607,7 @@ namespace Jint
         /// <param name="thisObj">The this value inside the function call.</param>
         /// <param name="arguments">The arguments of the function call.</param>
         /// <returns>The value returned by the function call.</returns>
-        public JsValue Invoke(string propertyName, object thisObj, object[] arguments)
+        public JsValue Invoke(string propertyName, object? thisObj, object[] arguments)
         {
             var value = GetValue(propertyName);
 
@@ -609,12 +632,12 @@ namespace Jint
         /// <param name="thisObj">The this value inside the function call.</param>
         /// <param name="arguments">The arguments of the function call.</param>
         /// <returns>The value returned by the function call.</returns>
-        public JsValue Invoke(JsValue value, object thisObj, object[] arguments)
+        public JsValue Invoke(JsValue value, object? thisObj, object[] arguments)
         {
             var callable = value as ICallable;
             if (callable is null)
             {
-                ExceptionHelper.ThrowTypeError(Realm, "Can only invoke functions");
+                ExceptionHelper.ThrowJavaScriptException(Realm.Intrinsics.TypeError, "Can only invoke functions");
             }
 
             JsValue DoInvoke()
@@ -630,27 +653,34 @@ namespace Jint
                 return result;
             }
 
-            return ExecuteWithConstraints(DoInvoke);
+            return ExecuteWithConstraints(Options.Strict, DoInvoke);
         }
 
-        private T ExecuteWithConstraints<T>(Func<T> callback)
+        private T ExecuteWithConstraints<T>(bool strict, Func<T> callback)
         {
             ResetConstraints();
 
             var ownsContext = _activeEvaluationContext is null;
             _activeEvaluationContext ??= new EvaluationContext(this);
 
+            var oldStrict = _isStrict;
             try
             {
-                return callback();
+                _isStrict = strict;
+                using (new StrictModeScope(_isStrict))
+                {
+                    return callback();
+                }
             }
             finally
             {
                 if (ownsContext)
                 {
-                    _activeEvaluationContext = null;
+                    _activeEvaluationContext = null!;
                 }
+                _isStrict = oldStrict;
                 ResetConstraints();
+                _agent.ClearKeptObjects();
             }
         }
 
@@ -676,7 +706,7 @@ namespace Jint
             {
                 if (ownsContext)
                 {
-                    _activeEvaluationContext = null;
+                    _activeEvaluationContext = null!;
                 }
             }
         }
@@ -702,9 +732,9 @@ namespace Jint
         /// <summary>
         /// Gets the last evaluated <see cref="Node"/>.
         /// </summary>
-        internal Node GetLastSyntaxNode()
+        internal SyntaxElement? GetLastSyntaxElement()
         {
-            return _activeEvaluationContext?.LastSyntaxNode;
+            return _activeEvaluationContext?.LastSyntaxElement;
         }
 
         /// <summary>
@@ -723,13 +753,13 @@ namespace Jint
         /// <summary>
         /// https://tc39.es/ecma262/#sec-resolvebinding
         /// </summary>
-        internal Reference ResolveBinding(string name, EnvironmentRecord env = null)
+        internal Reference ResolveBinding(string name, EnvironmentRecord? env = null)
         {
             env ??= ExecutionContext.LexicalEnvironment;
             return GetIdentifierReference(env, name, StrictModeScope.IsStrictModeCode);
         }
 
-        private static Reference GetIdentifierReference(EnvironmentRecord env, string name, bool strict)
+        private static Reference GetIdentifierReference(EnvironmentRecord? env, string name, bool strict)
         {
             if (env is null)
             {
@@ -748,11 +778,11 @@ namespace Jint
         /// <summary>
         /// https://tc39.es/ecma262/#sec-getnewtarget
         /// </summary>
-        internal JsValue GetNewTarget(EnvironmentRecord thisEnvironment = null)
+        internal JsValue GetNewTarget(EnvironmentRecord? thisEnvironment = null)
         {
             // we can take as argument if caller site has already determined the value, otherwise resolve
             thisEnvironment ??= ExecutionContext.GetThisEnvironment();
-            return thisEnvironment.NewTarget;
+            return thisEnvironment.NewTarget ?? JsValue.Undefined;
         }
 
         /// <summary>
@@ -771,7 +801,8 @@ namespace Jint
             Script script,
             GlobalEnvironmentRecord env)
         {
-            var hoistingScope = HoistingScope.GetProgramLevelDeclarations(script);
+            var strict = _isStrict || StrictModeScope.IsStrictModeCode;
+            var hoistingScope = HoistingScope.GetProgramLevelDeclarations(strict, script);
             var functionDeclarations = hoistingScope._functionDeclarations;
             var varDeclarations = hoistingScope._variablesDeclarations;
             var lexDeclarations = hoistingScope._lexicalDeclarations;
@@ -787,17 +818,17 @@ namespace Jint
                 for (var i = functionDeclarations.Count - 1; i >= 0; i--)
                 {
                     var d = functionDeclarations[i];
-                    var fn = d.Id.Name;
+                    var fn = d.Id!.Name;
                     if (!declaredFunctionNames.Contains(fn))
                     {
                         var fnDefinable = env.CanDeclareGlobalFunction(fn);
                         if (!fnDefinable)
                         {
-                            ExceptionHelper.ThrowTypeError(realm);
+                            ExceptionHelper.ThrowTypeError(realm, "Cannot declare global function " + fn);
                         }
 
                         declaredFunctionNames.Add(fn);
-                        functionToInitialize.AddFirst(new JintFunctionDefinition(this, d));
+                        functionToInitialize.AddFirst(new JintFunctionDefinition(d));
                     }
                 }
             }
@@ -833,6 +864,7 @@ namespace Jint
                 }
             }
 
+            PrivateEnvironmentRecord? privateEnv = null;
             if (lexDeclarations != null)
             {
                 for (var i = 0; i < lexDeclarations.Count; i++)
@@ -850,7 +882,7 @@ namespace Jint
                             ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{dn}' has already been declared");
                         }
 
-                        if (d.Kind == VariableDeclarationKind.Const)
+                        if (d.IsConstantDeclaration())
                         {
                             env.CreateImmutableBinding(dn, strict: true);
                         }
@@ -864,14 +896,14 @@ namespace Jint
 
             foreach (var f in functionToInitialize)
             {
-                var fn = f.Name;
+                var fn = f.Name!;
 
                 if (env.HasLexicalDeclaration(fn))
                 {
                     ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{fn}' has already been declared");
                 }
 
-                var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, env);
+                var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, env, privateEnv);
                 env.CreateGlobalFunctionBinding(fn, fo, canBeDeleted: false);
             }
 
@@ -885,7 +917,7 @@ namespace Jint
         /// <summary>
         /// https://tc39.es/ecma262/#sec-functiondeclarationinstantiation
         /// </summary>
-        internal ArgumentsInstance FunctionDeclarationInstantiation(
+        internal ArgumentsInstance? FunctionDeclarationInstantiation(
             FunctionInstance functionInstance,
             JsValue[] argumentsList)
         {
@@ -893,20 +925,20 @@ namespace Jint
             var func = functionInstance._functionDefinition;
 
             var env = (FunctionEnvironmentRecord) ExecutionContext.LexicalEnvironment;
-            var strict = StrictModeScope.IsStrictModeCode;
+            var strict = _isStrict || StrictModeScope.IsStrictModeCode;
 
-            var configuration = func.Initialize(functionInstance);
+            var configuration = func.Initialize();
             var parameterNames = configuration.ParameterNames;
             var hasDuplicates = configuration.HasDuplicates;
             var simpleParameterList = configuration.IsSimpleParameterList;
             var hasParameterExpressions = configuration.HasParameterExpressions;
 
             var canInitializeParametersOnDeclaration = simpleParameterList && !configuration.HasDuplicates;
-            env.InitializeParameters(parameterNames, hasDuplicates,
-                canInitializeParametersOnDeclaration ? argumentsList : null);
+            var arguments = canInitializeParametersOnDeclaration ? argumentsList : null;
+            env.InitializeParameters(parameterNames, hasDuplicates, arguments);
 
-            ArgumentsInstance ao = null;
-            if (configuration.ArgumentsObjectNeeded)
+            ArgumentsInstance? ao = null;
+            if (configuration.ArgumentsObjectNeeded || _isDebugMode)
             {
                 if (strict || !simpleParameterList)
                 {
@@ -932,7 +964,7 @@ namespace Jint
             if (!canInitializeParametersOnDeclaration)
             {
                 // slower set
-                env.AddFunctionParameters(_activeEvaluationContext, func.Function, argumentsList);
+                env.AddFunctionParameters(_activeEvaluationContext!, func.Function, argumentsList);
             }
 
             // Let iteratorRecord be CreateListIteratorRecord(argumentsList).
@@ -945,9 +977,10 @@ namespace Jint
             if (!hasParameterExpressions)
             {
                 // NOTE: Only a single lexical environment is needed for the parameters and top-level vars.
-                for (var i = 0; i < configuration.VarsToInitialize.Count; i++)
+                var varsToInitialize = configuration.VarsToInitialize!;
+                for (var i = 0; i < varsToInitialize.Count; i++)
                 {
-                    var pair = configuration.VarsToInitialize[i];
+                    var pair = varsToInitialize[i];
                     env.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, JsValue.Undefined);
                 }
 
@@ -962,9 +995,10 @@ namespace Jint
 
                 UpdateVariableEnvironment(varEnv);
 
-                for (var i = 0; i < configuration.VarsToInitialize.Count; i++)
+                var varsToInitialize = configuration.VarsToInitialize!;
+                for (var i = 0; i < varsToInitialize.Count; i++)
                 {
-                    var pair = configuration.VarsToInitialize[i];
+                    var pair = varsToInitialize[i];
                     var initialValue = pair.InitialValue ?? env.GetBindingValue(pair.Name, strict: false);
                     varEnvRec.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, initialValue);
                 }
@@ -996,7 +1030,7 @@ namespace Jint
                     for (var j = 0; j < d.BoundNames.Count; j++)
                     {
                         var dn = d.BoundNames[j];
-                        if (d.Kind == VariableDeclarationKind.Const)
+                        if (d.IsConstantDeclaration)
                         {
                             lexEnv.CreateImmutableBinding(dn, strict: true);
                         }
@@ -1014,8 +1048,8 @@ namespace Jint
                 var realm = Realm;
                 foreach (var f in configuration.FunctionsToInitialize)
                 {
-                    var fn = f.Name;
-                    var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, lexEnv);
+                    var fn = f.Name!;
+                    var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, lexEnv, privateEnv);
                     varEnv.SetMutableBinding(fn, fo, strict: false);
                 }
             }
@@ -1045,10 +1079,10 @@ namespace Jint
             Script script,
             EnvironmentRecord varEnv,
             EnvironmentRecord lexEnv,
-            PrivateEnvironmentRecord privateEnv,
+            PrivateEnvironmentRecord? privateEnv,
             bool strict)
         {
-            var hoistingScope = HoistingScope.GetProgramLevelDeclarations(script);
+            var hoistingScope = HoistingScope.GetProgramLevelDeclarations(strict, script);
 
             var lexEnvRec = (DeclarativeEnvironmentRecord) lexEnv;
             var varEnvRec = varEnv;
@@ -1075,21 +1109,21 @@ namespace Jint
                 while (!ReferenceEquals(thisLex, varEnv))
                 {
                     var thisEnvRec = thisLex;
-                    if (!(thisEnvRec is ObjectEnvironmentRecord))
+                    if (thisEnvRec is not ObjectEnvironmentRecord)
                     {
                         ref readonly var nodes = ref hoistingScope._variablesDeclarations;
                         for (var i = 0; i < nodes.Count; i++)
                         {
                             var variablesDeclaration = nodes[i];
                             var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
-                            if (thisEnvRec.HasBinding(identifier.Name))
+                            if (thisEnvRec!.HasBinding(identifier.Name))
                             {
                                 ExceptionHelper.ThrowSyntaxError(realm);
                             }
                         }
                     }
 
-                    thisLex = thisLex._outerEnv;
+                    thisLex = thisLex!._outerEnv;
                 }
             }
 
@@ -1102,7 +1136,7 @@ namespace Jint
                 for (var i = functionDeclarations.Count - 1; i >= 0; i--)
                 {
                     var d = functionDeclarations[i];
-                    var fn = d.Id.Name;
+                    var fn = d.Id!.Name;
                     if (!declaredFunctionNames.Contains(fn))
                     {
                         if (varEnvRec is GlobalEnvironmentRecord ger)
@@ -1115,7 +1149,7 @@ namespace Jint
                         }
 
                         declaredFunctionNames.Add(fn);
-                        functionsToInitialize.AddFirst(new JintFunctionDefinition(this, d));
+                        functionsToInitialize.AddFirst(new JintFunctionDefinition(d));
                     }
                 }
             }
@@ -1126,7 +1160,7 @@ namespace Jint
             var variableDeclarationsCount = variableDeclarations?.Count;
             for (var i = 0; i < variableDeclarationsCount; i++)
             {
-                var variableDeclaration = variableDeclarations[i];
+                var variableDeclaration = variableDeclarations![i];
                 boundNames.Clear();
                 variableDeclaration.GetBoundNames(boundNames);
                 for (var j = 0; j < boundNames.Count; j++)
@@ -1153,12 +1187,12 @@ namespace Jint
             for (var i = 0; i < lexicalDeclarationsCount; i++)
             {
                 boundNames.Clear();
-                var d = lexicalDeclarations[i];
+                var d = lexicalDeclarations![i];
                 d.GetBoundNames(boundNames);
                 for (var j = 0; j < boundNames.Count; j++)
                 {
                     var dn = boundNames[j];
-                    if (d.Kind == VariableDeclarationKind.Const)
+                    if (d.IsConstantDeclaration())
                     {
                         lexEnvRec.CreateImmutableBinding(dn, strict: true);
                     }
@@ -1171,8 +1205,8 @@ namespace Jint
 
             foreach (var f in functionsToInitialize)
             {
-                var fn = f.Name;
-                var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, lexEnv);
+                var fn = f.Name!;
+                var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, lexEnv, privateEnv);
                 if (varEnvRec is GlobalEnvironmentRecord ger)
                 {
                     ger.CreateGlobalFunctionBinding(fn, fo, canBeDeleted: true);
@@ -1222,7 +1256,57 @@ namespace Jint
             _executionContexts.ReplaceTopVariableEnvironment(newEnv);
         }
 
-        internal JsValue Call(ICallable callable, JsValue thisObject, JsValue[] arguments, JintExpression expression)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void UpdatePrivateEnvironment(PrivateEnvironmentRecord? newEnv)
+        {
+            _executionContexts.ReplaceTopPrivateEnvironment(newEnv);
+        }
+
+        /// <summary>
+        /// Invokes the named callable and returns the resulting object.
+        /// </summary>
+        /// <param name="callableName">The name of the callable.</param>
+        /// <param name="arguments">The arguments of the call.</param>
+        /// <returns>The value returned by the call.</returns>
+        public JsValue Call(string callableName, params JsValue[] arguments)
+        {
+            var callable = Evaluate(callableName);
+            return Call(callable, arguments);
+        }
+
+        /// <summary>
+        /// Invokes the callable and returns the resulting object.
+        /// </summary>
+        /// <param name="callable">The callable.</param>
+        /// <param name="arguments">The arguments of the call.</param>
+        /// <returns>The value returned by the call.</returns>
+        public JsValue Call(JsValue callable, params JsValue[] arguments)
+            => Call(callable, thisObject: JsValue.Undefined, arguments);
+
+        /// <summary>
+        /// Invokes the callable and returns the resulting object.
+        /// </summary>
+        /// <param name="callable">The callable.</param>
+        /// <param name="thisObject">Value bound as this.</param>
+        /// <param name="arguments">The arguments of the call.</param>
+        /// <returns>The value returned by the call.</returns>
+        public JsValue Call(JsValue callable, JsValue thisObject, JsValue[] arguments)
+        {
+            JsValue Callback()
+            {
+                if (!callable.IsCallable)
+                {
+                    ExceptionHelper.ThrowArgumentException(callable + " is not callable");
+                }
+
+                return Call((ICallable) callable, thisObject, arguments, null);
+            }
+
+            return ExecuteWithConstraints(Options.Strict, Callback);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal JsValue Call(ICallable callable, JsValue thisObject, JsValue[] arguments, JintExpression? expression)
         {
             if (callable is FunctionInstance functionInstance)
             {
@@ -1232,61 +1316,118 @@ namespace Jint
             return callable.Call(thisObject, arguments);
         }
 
-        internal JsValue Construct(IConstructor constructor, JsValue[] arguments, JsValue newTarget,
-            JintExpression expression)
+        /// <summary>
+        /// Calls the named constructor and returns the resulting object.
+        /// </summary>
+        /// <param name="constructorName">The name of the constructor to call.</param>
+        /// <param name="arguments">The arguments of the constructor call.</param>
+        /// <returns>The value returned by the constructor call.</returns>
+        public ObjectInstance Construct(string constructorName, params JsValue[] arguments)
+        {
+            var constructor = Evaluate(constructorName);
+            return Construct(constructor, arguments);
+        }
+
+        /// <summary>
+        /// Calls the constructor and returns the resulting object.
+        /// </summary>
+        /// <param name="constructor">The name of the constructor to call.</param>
+        /// <param name="arguments">The arguments of the constructor call.</param>
+        /// <returns>The value returned by the constructor call.</returns>
+        public ObjectInstance Construct(JsValue constructor, params JsValue[] arguments)
+        {
+            ObjectInstance Callback()
+            {
+                if (!constructor.IsConstructor)
+                {
+                    ExceptionHelper.ThrowArgumentException(constructor + " is not a constructor");
+                }
+
+                return Construct(constructor, arguments, constructor, null);
+            }
+
+            return ExecuteWithConstraints(Options.Strict, Callback);
+        }
+
+        internal ObjectInstance Construct(
+            JsValue constructor,
+            JsValue[] arguments,
+            JsValue newTarget,
+            JintExpression? expression)
         {
             if (constructor is FunctionInstance functionInstance)
             {
                 return Construct(functionInstance, arguments, newTarget, expression);
             }
 
-            return constructor.Construct(arguments, newTarget);
+            return ((IConstructor) constructor).Construct(arguments, newTarget);
         }
 
         internal JsValue Call(
             FunctionInstance functionInstance,
             JsValue thisObject,
             JsValue[] arguments,
-            JintExpression expression)
+            JintExpression? expression)
         {
-            var callStackElement = new CallStackElement(functionInstance, expression, ExecutionContext);
-            var recursionDepth = CallStack.Push(callStackElement);
+            // ensure logic is in sync between Call, Construct and JintCallExpression!
+
+            var recursionDepth = CallStack.Push(functionInstance, expression, ExecutionContext);
 
             if (recursionDepth > Options.Constraints.MaxRecursionDepth)
             {
-                // pop the current element as it was never reached
-                CallStack.Pop();
-                ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack, callStackElement.ToString());
+                // automatically pops the current element as it was never reached
+                ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack);
             }
 
-            var result = functionInstance.Call(thisObject, arguments);
-
-            CallStack.Pop();
+            JsValue result;
+            try
+            {
+                result = functionInstance.Call(thisObject, arguments);
+            }
+            finally
+            {
+                // if call stack was reset due to recursive call to engine or similar, we might not have it anymore
+                if (CallStack.Count > 0)
+                {
+                    CallStack.Pop();
+                }
+            }
 
             return result;
         }
 
-        internal JsValue Construct(
+        private ObjectInstance Construct(
             FunctionInstance functionInstance,
             JsValue[] arguments,
             JsValue newTarget,
-            JintExpression expression)
+            JintExpression? expression)
         {
-            var callStackElement = new CallStackElement(functionInstance, expression, ExecutionContext);
-            var recursionDepth = CallStack.Push(callStackElement);
+            // ensure logic is in sync between Call, Construct and JintCallExpression!
+
+            var recursionDepth = CallStack.Push(functionInstance, expression, ExecutionContext);
 
             if (recursionDepth > Options.Constraints.MaxRecursionDepth)
             {
-                // pop the current element as it was never reached
-                CallStack.Pop();
-                ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack, callStackElement.ToString());
+                // automatically pops the current element as it was never reached
+                ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack);
             }
 
-            var result = ((IConstructor) functionInstance).Construct(arguments, newTarget);
-
-            CallStack.Pop();
+            ObjectInstance result;
+            try
+            {
+                result = ((IConstructor) functionInstance).Construct(arguments, newTarget);
+            }
+            finally
+            {
+                CallStack.Pop();
+            }
 
             return result;
+        }
+
+        public void Dispose()
+        {
+            // no-op for now
         }
     }
 }

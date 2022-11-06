@@ -5,8 +5,8 @@ namespace Jint.Runtime.Interpreter.Expressions
 {
     internal sealed class JintLogicalAndExpression : JintExpression
     {
-        private JintExpression _left;
-        private JintExpression _right;
+        private JintExpression _left = null!;
+        private JintExpression _right = null!;
 
         public JintLogicalAndExpression(BinaryExpression expression) : base(expression)
         {
@@ -16,22 +16,22 @@ namespace Jint.Runtime.Interpreter.Expressions
         protected override void Initialize(EvaluationContext context)
         {
             var expression = (BinaryExpression) _expression;
-            _left = Build(context.Engine, expression.Left);
-            _right = Build(context.Engine, expression.Right);
+            _left = Build(expression.Left);
+            _right = Build(expression.Right);
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            var left = _left.GetValue(context).Value;
+            var left = _left.GetValue(context);
 
             if (left is JsBoolean b && !b._value)
             {
-                return NormalCompletion(b);
+                return b;
             }
 
             if (!TypeConverter.ToBoolean(left))
             {
-                return NormalCompletion(left);
+                return left;
             }
 
             return _right.GetValue(context);

@@ -1,6 +1,7 @@
-﻿using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Contracts;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using Jint.Native.Generator;
 using Jint.Native.Iterator;
@@ -37,11 +38,12 @@ namespace Jint.Native
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal IteratorInstance GetIterator(Realm realm, GeneratorKind hint = GeneratorKind.Sync, ICallable method = null)
+        internal IteratorInstance GetIterator(Realm realm, GeneratorKind hint = GeneratorKind.Sync, ICallable? method = null)
         {
             if (!TryGetIterator(realm, out var iterator, hint, method))
             {
                 ExceptionHelper.ThrowTypeError(realm, "The value is not iterable");
+                return null!;
             }
 
             return iterator;
@@ -49,7 +51,7 @@ namespace Jint.Native
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool TryGetIterator(Realm realm, out IteratorInstance iterator, GeneratorKind hint = GeneratorKind.Sync, ICallable method = null)
+        internal bool TryGetIterator(Realm realm, [NotNullWhen(true)] out IteratorInstance? iterator, GeneratorKind hint = GeneratorKind.Sync, ICallable? method = null)
         {
             var obj = TypeConverter.ToObject(realm, this);
 
@@ -107,7 +109,7 @@ namespace Jint.Native
         /// <summary>
         /// Creates a valid <see cref="JsValue"/> instance from any <see cref="Object"/> instance
         /// </summary>
-        public static JsValue FromObject(Engine engine, object value)
+        public static JsValue FromObject(Engine engine, object? value)
         {
             if (value is null)
             {
@@ -135,7 +137,7 @@ namespace Jint.Native
                 return defaultConversion;
             }
 
-            return null;
+            return null!;
         }
 
         /// <summary>
@@ -156,7 +158,14 @@ namespace Jint.Native
             return engine.Invoke(this, arguments);
         }
 
-        public virtual bool HasOwnProperty(JsValue property) => false;
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-getv
+        /// </summary>
+        internal JsValue GetV(Realm realm, JsValue property)
+        {
+            var o = TypeConverter.ToObject(realm, this);
+            return o.Get(property, this);
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public JsValue Get(JsValue property)
@@ -165,7 +174,7 @@ namespace Jint.Native
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-8.12.3
+        /// https://tc39.es/ecma262/#sec-get-o-p
         /// </summary>
         public virtual JsValue Get(JsValue property, JsValue receiver)
         {
@@ -173,7 +182,7 @@ namespace Jint.Native
         }
 
         /// <summary>
-        /// https://tc39.es/ecma262/#sec-ordinary-object-internal-methods-and-internal-slots-set-p-v-receiver
+        /// https://tc39.es/ecma262/#sec-set-o-p-v-throw
         /// </summary>
         public virtual bool Set(JsValue property, JsValue value, JsValue receiver)
         {
@@ -211,34 +220,19 @@ namespace Jint.Native
             return "None";
         }
 
-        public static bool operator ==(JsValue a, JsValue b)
+        public static bool operator ==(JsValue? a, JsValue? b)
         {
-            if ((object) a == null)
+            if (a is null)
             {
-                return (object) b == null;
+                return b is null;
             }
 
-            return (object) b != null && a.Equals(b);
+            return b is not null && a.Equals(b);
         }
 
-        public static bool operator !=(JsValue a, JsValue b)
+        public static bool operator !=(JsValue? a, JsValue? b)
         {
-            if ((object) a == null)
-            {
-                if ((object) b == null)
-                {
-                    return false;
-                }
-
-                return true;
-            }
-
-            if ((object) b == null)
-            {
-                return true;
-            }
-
-            return !a.Equals(b);
+            return !(a == b);
         }
 
         public static implicit operator JsValue(char value)
@@ -271,38 +265,85 @@ namespace Jint.Native
             return JsNumber.Create(value);
         }
 
+        public static implicit operator JsValue(BigInteger value)
+        {
+            return JsBigInt.Create(value);
+        }
+
         public static implicit operator JsValue(bool value)
         {
             return value ? JsBoolean.True : JsBoolean.False;
         }
 
         [DebuggerStepThrough]
-        public static implicit operator JsValue(string value)
+        public static implicit operator JsValue(string? value)
         {
-            if (value == null)
-            {
-                return Null;
-            }
-
-            return JsString.Create(value);
+            return value == null ? Null : JsString.Create(value);
         }
 
-        public override bool Equals(object obj)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-islooselyequal
+        /// </summary>
+        public virtual bool IsLooselyEqual(JsValue value)
         {
-            if (ReferenceEquals(null, obj))
-            {
-                return false;
-            }
-
-            if (ReferenceEquals(this, obj))
+            if (ReferenceEquals(this, value))
             {
                 return true;
             }
 
-            return obj is JsValue value && Equals(value);
+            // TODO move to type specific IsLooselyEqual
+
+            var x = this;
+            var y = value;
+
+            if (x.IsNumber() && y.IsString())
+            {
+                return x.IsLooselyEqual(TypeConverter.ToNumber(y));
+            }
+
+            if (x.IsString() && y.IsNumber())
+            {
+                return y.IsLooselyEqual(TypeConverter.ToNumber(x));
+            }
+
+            if (x.IsBoolean())
+            {
+                return y.IsLooselyEqual(TypeConverter.ToNumber(x));
+            }
+
+            if (y.IsBoolean())
+            {
+                return x.IsLooselyEqual(TypeConverter.ToNumber(y));
+            }
+
+            if (y.IsObject() && (x._type & InternalTypes.Primitive) != 0)
+            {
+                return x.IsLooselyEqual(TypeConverter.ToPrimitive(y));
+            }
+
+            if (x.IsObject() && (y._type & InternalTypes.Primitive) != 0)
+            {
+                return y.IsLooselyEqual(TypeConverter.ToPrimitive(x));
+            }
+
+            return false;
         }
 
-        public abstract bool Equals(JsValue other);
+        /// <summary>
+        /// Strict equality.
+        /// </summary>
+        public override bool Equals(object obj)
+        {
+            return Equals(obj as JsValue);
+        }
+
+        /// <summary>
+        /// Strict equality.
+        /// </summary>
+        public virtual bool Equals(JsValue? other)
+        {
+            return ReferenceEquals(this, other);
+        }
 
         public override int GetHashCode()
         {
@@ -334,6 +375,9 @@ namespace Jint.Native
                         break;
                     case Types.Number:
                         Value = ((JsNumber) value)._value + " (number)";
+                        break;
+                    case Types.BigInt:
+                        Value = ((JsBigInt) value)._value + " (bigint)";
                         break;
                     case Types.Object:
                         Value = value.AsObject().GetType().Name;
@@ -378,7 +422,8 @@ namespace Jint.Native
                 return false;
             }
 
-            if (v is not ObjectInstance o)
+            var o = v as ObjectInstance;
+            if (o is null)
             {
                 return false;
             }
@@ -459,13 +504,12 @@ namespace Jint.Native
 
         internal static IConstructor AssertConstructor(Engine engine, JsValue c)
         {
-            var constructor = c as IConstructor;
-            if (constructor is null)
+            if (!c.IsConstructor)
             {
                 ExceptionHelper.ThrowTypeError(engine.Realm, c + " is not a constructor");
             }
 
-            return constructor;
+            return (IConstructor) c;
         }
     }
 }

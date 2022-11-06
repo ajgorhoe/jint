@@ -1,8 +1,8 @@
-using System;
+using System.Collections;
+using System.Diagnostics.CodeAnalysis;
 using Jint.Native;
 using Jint.Runtime.Interop;
 using Jint.Tests.Runtime.Domain;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -84,7 +84,7 @@ namespace Jint.Tests.Runtime
                 options.Interop.AllowSystemReflection = true;
             });
             engine.SetValue("m", new HiddenMembers());
-            Assert.True(engine.Evaluate("m.GetType").IsCallable());
+            Assert.True(engine.Evaluate("m.GetType").IsCallable);
 
             // reflection could bypass some safeguards
             Assert.Equal("Method1", engine.Evaluate("m.GetType().GetMethod('Method1').Invoke(m, [])").AsString());
@@ -122,12 +122,96 @@ namespace Jint.Tests.Runtime
             Assert.True(engine.Evaluate("EchoService.Hidden").IsUndefined());
         }
 
+        [Fact]
+        public void CustomDictionaryPropertyAccessTests()
+        {
+            var engine = new Engine(options =>
+            {
+                options.AllowClr();
+            });
+
+            var dc = new CustomDictionary<float>();
+            dc["a"] = 1;
+
+            engine.SetValue("dc", dc);
+
+            Assert.Equal(1, engine.Evaluate("dc.a"));
+            Assert.Equal(1, engine.Evaluate("dc['a']"));
+            Assert.NotEqual(JsValue.Undefined, engine.Evaluate("dc.Add"));
+            Assert.NotEqual(0, engine.Evaluate("dc.Add"));
+            Assert.Equal(JsValue.Undefined, engine.Evaluate("dc.b"));
+
+            engine.Execute("dc.b = 5");
+            engine.Execute("dc.Add('c', 10)");
+            Assert.Equal(5, engine.Evaluate("dc.b"));
+            Assert.Equal(10, engine.Evaluate("dc.c"));
+        }
+
+        [Fact]
+        public void CanAccessBaseClassStaticFields()
+        {
+            var engine = new Engine(options =>
+            {
+                options.AllowClr();
+            });
+
+            engine.SetValue("B", TypeReference.CreateTypeReference(engine, typeof(InheritingFromClassWithStatics)));
+            Assert.Equal(42, engine.Evaluate("B.a").AsNumber());
+            Assert.Equal(24, engine.Evaluate("B.a = 24; B.a").AsNumber());
+        }
+
+        private class BaseClassWithStatics
+        {
+            public static int a = 42;
+        }
+
+        private class InheritingFromClassWithStatics : BaseClassWithStatics
+        {
+        }
+
         private static class EchoService
         {
             public static string Echo(string message) => message;
 
             [Obsolete]
             public static string Hidden(string message) => message;
+        }
+
+        private class CustomDictionary<TValue> : IDictionary<string, TValue>
+        {
+            Dictionary<string, TValue> _dictionary = new Dictionary<string, TValue>();
+
+            public TValue this[string key]
+            {
+                get
+                {
+                    if (TryGetValue(key, out var val)) return val;
+
+                    // Normally, dictionary Item accessor throws an error when key does not exist
+                    // But this is a custom implementation
+                    return default;
+                }
+                set
+                {
+                    _dictionary[key] = value;
+                }
+            }
+
+            public ICollection<string> Keys => _dictionary.Keys;
+            public ICollection<TValue> Values => _dictionary.Values;
+            public int Count => _dictionary.Count;
+            public bool IsReadOnly => false;
+            public void Add(string key, TValue value) => _dictionary.Add(key, value);
+            public void Add(KeyValuePair<string, TValue> item) => _dictionary.Add(item.Key, item.Value);
+            public void Clear() => _dictionary.Clear();
+            public bool Contains(KeyValuePair<string, TValue> item) => _dictionary.ContainsKey(item.Key);
+            public bool ContainsKey(string key) => _dictionary.ContainsKey(key);
+            public void CopyTo(KeyValuePair<string, TValue>[] array, int arrayIndex) => throw new NotImplementedException();
+            public IEnumerator<KeyValuePair<string, TValue>> GetEnumerator() => _dictionary.GetEnumerator();
+            public bool Remove(string key) => _dictionary.Remove(key);
+            public bool Remove(KeyValuePair<string, TValue> item) => _dictionary.Remove(item.Key);
+            public bool TryGetValue(string key, [MaybeNullWhen(false)] out TValue value) => _dictionary.TryGetValue(key, out value);
+            IEnumerator IEnumerable.GetEnumerator() => _dictionary.GetEnumerator();
         }
     }
 }

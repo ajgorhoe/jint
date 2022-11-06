@@ -1,15 +1,44 @@
-﻿#nullable enable
-
-using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using Esprima;
 using Esprima.Ast;
 using Jint.Collections;
+using Jint.Native.Function;
 using Jint.Pooling;
+using Jint.Runtime.Environments;
+using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Runtime.CallStack
 {
+    // smaller version with only required info
+    internal readonly record struct CallStackExecutionContext
+    {
+        public CallStackExecutionContext(in ExecutionContext context)
+        {
+            LexicalEnvironment = context.LexicalEnvironment;
+        }
+
+        internal readonly EnvironmentRecord LexicalEnvironment;
+
+        internal EnvironmentRecord GetThisEnvironment()
+        {
+            var lex = LexicalEnvironment;
+            while (true)
+            {
+                if (lex != null)
+                {
+                    if (lex.HasThisBinding())
+                    {
+                        return lex;
+
+                    }
+
+                    lex = lex._outerEnv;
+                }
+            }
+        }
+    }
+
     internal sealed class JintCallStack
     {
         private readonly RefStack<CallStackElement> _stack = new();
@@ -26,8 +55,9 @@ namespace Jint.Runtime.CallStack
             }
         }
 
-        public int Push(in CallStackElement item)
+        public int Push(FunctionInstance functionInstance, JintExpression? expression, in ExecutionContext executionContext)
         {
+            var item = new CallStackElement(functionInstance, expression, new CallStackExecutionContext(executionContext));
             _stack.Push(item);
             if (_statistics is not null)
             {
@@ -63,6 +93,11 @@ namespace Jint.Runtime.CallStack
             return item;
         }
 
+        public bool TryPeek([NotNullWhen(true)] out CallStackElement item)
+        {
+            return _stack.TryPeek(out item);
+        }
+
         public int Count => _stack._size;
 
         public void Clear()
@@ -76,7 +111,7 @@ namespace Jint.Runtime.CallStack
             return string.Join("->", _stack.Select(cse => cse.ToString()).Reverse());
         }
 
-        internal string BuildCallStackString(Location location)
+        internal string BuildCallStackString(Location location, int excludeTop = 0)
         {
             static void AppendLocation(
                 StringBuilder sb,
@@ -124,7 +159,7 @@ namespace Jint.Runtime.CallStack
             using var sb = StringBuilderPool.Rent();
 
             // stack is one frame behind function-wise when we start to process it from expression level
-            var index = _stack._size - 1;
+            var index = _stack._size - 1 - excludeTop;
             var element = index >= 0 ? _stack[index] : (CallStackElement?) null;
             var shortDescription = element?.ToString() ?? "";
 
@@ -150,7 +185,7 @@ namespace Jint.Runtime.CallStack
         /// <summary>
         /// A version of <see cref="EsprimaExtensions.GetKey"/> that cannot get into loop as we are already building a stack.
         /// </summary>
-        private static string GetPropertyKey(Expression expression)
+        private static string GetPropertyKey(Node expression)
         {
             if (expression is Literal literal)
             {
@@ -170,5 +205,6 @@ namespace Jint.Runtime.CallStack
 
             return "?";
         }
+
     }
 }

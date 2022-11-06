@@ -1,14 +1,15 @@
-﻿using System;
+using System.Runtime.InteropServices;
 
 namespace Jint
 {
+    [StructLayout(LayoutKind.Auto)]
     public readonly struct StrictModeScope : IDisposable
     {
         private readonly bool _strict;
         private readonly bool _force;
         private readonly ushort _forcedRefCount;
 
-        [ThreadStatic] 
+        [ThreadStatic]
         private static ushort _refCount;
 
         public StrictModeScope(bool strict = true, bool force = false)
@@ -42,7 +43,7 @@ namespace Jint
             if (_force)
             {
                 _refCount = _forcedRefCount;
-            } 
+            }
         }
 
         public static bool IsStrictModeCode => _refCount > 0;

@@ -6,7 +6,7 @@
 
 # Jint
 
-Jint is a __Javascript interpreter__ for .NET which can run on __any modern .NET platform__ as it supports .NET Standard 2.0 and .NET 4.6.1 targets (and up). Because Jint neither generates any .NET bytecode nor uses the DLR it runs relatively small scripts really fast.
+Jint is a __Javascript interpreter__ for .NET which can run on __any modern .NET platform__ as it supports .NET Standard 2.0 and .NET 4.6.2 targets (and up).
 
 💡 You should prefer 3.x beta over the 2.x legacy version as all new features and improvements are targeted against version 3.x.
 
@@ -36,21 +36,20 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 - ✔ Template strings
 - ✔ Lexical scoping of variables (let and const)
 - ✔ Map and Set
-- ❌ Modules and module loaders
+- ✔ Modules and module loaders
 - ✔ Promises (Experimental, API is unstable)
 - ✔ Reflect
 - ✔ Proxies
-- ✔ Reflect
 - ✔ Symbols
 - ❌ Tail calls
 - ✔ Typed arrays
-- ❌ Unicode
+- ✔ Unicode
 - ✔ Weakmap and Weakset
 
 #### ECMAScript 2016
 
 - ✔ `Array.prototype.includes`
-- ❌ `await`, `async`
+- ✔ `await`, `async`
 - ✔ Block-scoping of variables and functions
 - ✔ Exponentiation operator `**`
 - ✔ Destructuring patterns (of variables)
@@ -62,17 +61,56 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 #### ECMAScript 2018
 
 - ✔ `Promise.prototype.finally`
+- ✔ RegExp named capture groups
 - ✔ Rest/spread operators for object literals (`...identifier`),
 
 #### ECMAScript 2019
 
 - ✔ `Array.prototype.flat`, `Array.prototype.flatMap`
+- ✔ `String.prototype.trimStart`, `String.prototype.trimEnd`
+- ✔ `Object.fromEntries`
+- ✔ `Symbol.description`
+- ✔ Optional catch binding
 
 #### ECMAScript 2020
 
-- ❌ BigInt
+- ✔ `BigInt`
+- ❌ `export * as ns from`
+- ✔ `for-in` enhancements
 - ✔ `globalThis` object
+- ✔ `import`
+- ✔ `import.meta`
 - ✔ Nullish coalescing operator (`??`)
+- ✔ Optional chaining
+- ✔ `Promise.allSettled`
+- ✔ `String.prototype.matchAll`
+
+#### ECMAScript 2021
+
+- ✔ Logical Assignment Operators (`&&=` `||=` `??=`)
+- ✔ Numeric Separators (`1_000`)
+- ✔ `AggregateError`
+- ✔ `Promise.any` 
+- ✔ `String.prototype.replaceAll`
+- ✔ `WeakRef` 
+- ✔ `FinalizationRegistry`
+
+#### ECMAScript 2022
+
+- ❌ Class Fields
+- ✔ RegExp Match Indices
+- ❌ Top-level await
+- ❌ Ergonomic brand checks for Private Fields
+- ✔ `.at()`
+- ✔ Accessible `Object.prototype.hasOwnProperty` (`Object.hasOwn`)
+- ❌ Class Static Block
+- ✔ Error Cause
+
+#### ECMAScript Stage 3 (no version yet)
+
+- ✔ Array find from last
+- ✔ Array.group and Array.groupToMap
+- ✔ ShadowRealm
 
 #### Other
 
@@ -80,6 +118,14 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 - Constraints for execution (recursion, memory usage, duration)
 
 > Follow new features as they are being implemented, see https://github.com/sebastienros/jint/issues/343
+
+## Performance
+
+- Because Jint neither generates any .NET bytecode nor uses the DLR it runs relatively small scripts really fast
+- If you repeatedly run the same script, you should cache the `Script` or `Module` instance produced by Esprima and feed it to Jint instead of the content string
+- You should prefer running engine in strict mode, it improves performance
+
+You can check out [the engine comparison results](Jint.Benchmark), bear in mind that every use case is different and benchmarks might not reflect your real-world usage.
 
 ## Discussion
 
@@ -89,7 +135,7 @@ Join the chat on [Gitter](https://gitter.im/sebastienros/jint) or post your ques
 
 Here is a short video of how Jint works and some sample usage
 
-https://channel9.msdn.com/Shows/Code-Conversations/Sebastien-Ros-on-jint-a-Javascript-Interpreter-for-NET
+https://docs.microsoft.com/shows/code-conversations/sebastien-ros-on-jint-javascript-interpreter-net
 
 
 ## Examples
@@ -246,29 +292,29 @@ var engine = new Engine(options => {
 }
 ```
 
-You can also write a custom constraint by implementing the `IConstraint` interface:
+You can also write a custom constraint by deriving from the `Constraint` base class:
 
 ```c#
-public interface IConstraint
+public abstract class Constraint
 {
-    /// Called before a script is run and useful when you us an engine object for multiple executions.
-    void Reset();
+    /// Called before script is run and useful when you use an engine object for multiple executions.
+    public abstract void Reset();
 
-    // Called before each statement to check if your requirements are met.
-    void Check();
+    // Called before each statement to check if your requirements are met; if not - throws an exception.
+    public abstract void Check();
 }
 ```
 
 For example we can write a constraint that stops scripts when the CPU usage gets too high:
 
 ```c#
-class MyCPUConstraint : IConstraint
+class MyCPUConstraint : Constraint
 {
-    public void Reset()
+    public override void Reset()
     {
     }
 
-    public void Check()
+    public override void Check()
     {
         var cpuUsage = GetCPUUsage();
 
@@ -306,6 +352,58 @@ for (var i = 0; i < 10; i++)
     }
 }
 ```
+
+## Using Modules
+
+You can use modules to `import` and `export` variables from multiple script files:
+
+```c#
+var engine = new Engine(options =>
+{
+    options.EnableModules(@"C:\Scripts");
+})
+
+var ns = engine.ImportModule("./my-module.js");
+
+var value = ns.Get("value").AsString();
+```
+
+By default, the module resolution algorithm will be restricted to the base path specified in `EnableModules`, and there is no package support. However you can provide your own packages in two ways.
+
+Defining modules using JavaScript source code:
+
+```c#
+engine.CreateModule("user", "export const name = 'John';")
+
+var ns = engine.ImportModule("user");
+
+var name = ns.Get("name").AsString();
+```
+
+Defining modules using the module builder, which allows you to export CLR classes and values from .NET:
+
+```c#
+// Create the module 'lib' with the class MyClass and the variable version
+engine.CreateModule("lib", builder => builder
+    .ExportType<MyClass>()
+    .ExportValue("version", 15)
+);
+
+// Create a user-defined module and do something with 'lib'
+engine.CreateModule("custom", @"
+    import { MyClass, version } from 'lib';
+    const x = new MyClass();
+    export const result as x.doSomething();
+");
+
+// Import the user-defined module; this will execute the import chain
+var ns = engine.ImportModule("custom");
+
+// The result contains "live" bindings to the module
+var id = ns.Get("result").AsInteger();
+```
+
+Note that you don't need to `EnableModules` if you only use modules created using `AddModule`.
 
 ## .NET Interoperability
 

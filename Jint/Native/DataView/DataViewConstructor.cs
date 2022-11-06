@@ -28,13 +28,13 @@ namespace Jint.Native.DataView
 
         public DataViewPrototype PrototypeObject { get; }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             ExceptionHelper.ThrowTypeError(_realm, "Constructor DataView requires 'new'");
             return Undefined;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
             if (newTarget.IsUndefined())
             {
@@ -80,7 +80,7 @@ namespace Jint.Native.DataView
             var o = OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.DataView.PrototypeObject,
-                static (engine, realm, state) => new DataViewInstance(engine));
+                static (Engine engine, Realm _, object? _) => new DataViewInstance(engine));
 
             if (buffer.IsDetachedBuffer)
             {

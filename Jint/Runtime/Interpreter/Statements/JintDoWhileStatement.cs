@@ -9,9 +9,9 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintDoWhileStatement : JintStatement<DoWhileStatement>
     {
-        private JintStatement _body;
-        private string _labelSetName;
-        private JintExpression _test;
+        private ProbablyBlockStatement _body;
+        private string? _labelSetName;
+        private JintExpression _test = null!;
 
         public JintDoWhileStatement(DoWhileStatement statement) : base(statement)
         {
@@ -19,8 +19,8 @@ namespace Jint.Runtime.Interpreter.Statements
 
         protected override void Initialize(EvaluationContext context)
         {
-            _body = Build(_statement.Body);
-            _test = JintExpression.Build(context.Engine, _statement.Test);
+            _body = new ProbablyBlockStatement(_statement.Body);
+            _test = JintExpression.Build(_statement.Test);
             _labelSetName = _statement.LabelSet?.Name;
         }
 
@@ -37,11 +37,11 @@ namespace Jint.Runtime.Interpreter.Statements
                     v = completion.Value;
                 }
 
-                if (completion.Type != CompletionType.Continue || completion.Target != _labelSetName)
+                if (completion.Type != CompletionType.Continue || context.Target != _labelSetName)
                 {
-                    if (completion.Type == CompletionType.Break && (completion.Target == null || completion.Target == _labelSetName))
+                    if (completion.Type == CompletionType.Break && (context.Target == null || context.Target == _labelSetName))
                     {
-                        return new Completion(CompletionType.Normal, v, null, Location);
+                        return new Completion(CompletionType.Normal, v, _statement);
                     }
 
                     if (completion.Type != CompletionType.Normal)
@@ -50,10 +50,15 @@ namespace Jint.Runtime.Interpreter.Statements
                     }
                 }
 
-                iterating = TypeConverter.ToBoolean(_test.GetValue(context).Value);
+                if (context.DebugMode)
+                {
+                    context.Engine.DebugHandler.OnStep(_test._expression);
+                }
+
+                iterating = TypeConverter.ToBoolean(_test.GetValue(context));
             } while (iterating);
 
-            return NormalCompletion(v);
+            return new Completion(CompletionType.Normal, v, ((JintStatement) this)._statement);
         }
     }
 }

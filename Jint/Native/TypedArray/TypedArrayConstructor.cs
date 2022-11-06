@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.ArrayBuffer;
@@ -44,13 +42,15 @@ namespace Jint.Native.TypedArray
             SetProperties(properties);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             ExceptionHelper.ThrowTypeError(_realm, "Abstract class TypedArray not directly constructable");
             return Undefined;
         }
 
-        public ObjectInstance Construct(JsValue[] args, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] args, JsValue newTarget) => Construct(args, newTarget);
+
+        internal ObjectInstance Construct(JsValue[] args, JsValue newTarget)
         {
             if (newTarget.IsUndefined())
             {
@@ -70,7 +70,7 @@ namespace Jint.Native.TypedArray
                 TypedArrayElementType.Uint16 => static intrinsics => intrinsics.Uint16Array.PrototypeObject,
                 TypedArrayElementType.Uint32 => static intrinsics => intrinsics.Uint32Array.PrototypeObject,
                 TypedArrayElementType.BigUint64 => static intrinsics => intrinsics.BigUint64Array.PrototypeObject,
-                _ => null
+                _ => null!
             };
 
             var numberOfArgs = args.Length;
@@ -117,7 +117,7 @@ namespace Jint.Native.TypedArray
         /// <summary>
         /// https://tc39.es/ecma262/#sec-iterabletolist
         /// </summary>
-        internal static List<JsValue> IterableToList(Realm realm, JsValue items, ICallable usingIterator)
+        internal static List<JsValue> IterableToList(Realm realm, JsValue items, ICallable? method = null)
         {
             var iteratorRecord = items.GetIterator(realm);
             var values = new List<JsValue>();
@@ -145,18 +145,15 @@ namespace Jint.Native.TypedArray
             var elementSize = elementType.GetElementSize();
             var byteLength = elementSize * elementLength;
 
-            var bufferConstructor = (JsValue) (!srcData.IsSharedArrayBuffer
-                ? SpeciesConstructor(srcData, _realm.Intrinsics.ArrayBuffer)
-                : _realm.Intrinsics.ArrayBuffer);
-
+            var arrayBuffer = _realm.Intrinsics.ArrayBuffer;
             ArrayBufferInstance data;
             if (elementType == srcType)
             {
-                data = srcData.CloneArrayBuffer(_realm.Intrinsics.ArrayBuffer, srcByteOffset, byteLength, bufferConstructor);
+                data = srcData.CloneArrayBuffer(arrayBuffer, srcByteOffset, byteLength);
             }
             else
             {
-                data = _realm.Intrinsics.ArrayBuffer.AllocateArrayBuffer(bufferConstructor, byteLength);
+                data = arrayBuffer.AllocateArrayBuffer(arrayBuffer, byteLength);
                 srcData.AssertNotDetached();
                 if (srcArray._contentType != o._contentType)
                 {
@@ -279,11 +276,27 @@ namespace Jint.Native.TypedArray
             return obj;
         }
 
-        internal static void FillTypedArrayInstance(TypedArrayInstance target, System.Array values)
+        internal static void FillTypedArrayInstance<T>(TypedArrayInstance target, T[] values)
         {
             for (var i = 0; i < values.Length; ++i)
             {
-                target.DoIntegerIndexedElementSet(i, Convert.ToDouble(values.GetValue(i)));
+                target.DoIntegerIndexedElementSet(i, Convert.ToDouble(values[i]));
+            }
+        }
+
+        internal static void FillTypedArrayInstance(TypedArrayInstance target, ulong[] values)
+        {
+            for (var i = 0; i < values.Length; ++i)
+            {
+                target.DoIntegerIndexedElementSet(i, values[i]);
+            }
+        }
+
+        internal static void FillTypedArrayInstance(TypedArrayInstance target, long[] values)
+        {
+            for (var i = 0; i < values.Length; ++i)
+            {
+                target.DoIntegerIndexedElementSet(i, values[i]);
             }
         }
     }

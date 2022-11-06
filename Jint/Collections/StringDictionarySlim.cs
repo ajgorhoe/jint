@@ -1,12 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+#nullable disable
+
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.CompilerServices;
 
 namespace Jint.Collections
@@ -142,7 +141,13 @@ namespace Jint.Collections
             return false;
         }
 
-       // Not safe for concurrent _reads_ (at least, if either of them add)
+        public void SetOrUpdateValue<TState>(Key key, Func<TValue, TState, TValue> updater, TState state)
+        {
+            ref var currentValue = ref GetOrAddValueRef(key);
+            currentValue = updater(currentValue, state);
+        }
+
+        // Not safe for concurrent _reads_ (at least, if either of them add)
         // For concurrent reads, prefer TryGetValue(key, out value)
         /// <summary>
         /// Gets the value for the specified key, or, if the key is not present,
@@ -223,7 +228,7 @@ namespace Jint.Collections
 
             return entries;
         }
-        
+
         /// <summary>
         /// Gets an enumerator over the dictionary
         /// </summary>
@@ -287,7 +292,7 @@ namespace Jint.Collections
 
             public void Dispose() { }
         }
-        
+
         internal static class HashHelpers
         {
             internal static readonly int[] SizeOneIntArray = new int[1];

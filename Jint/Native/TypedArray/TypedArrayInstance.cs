@@ -1,6 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Esprima;
 using Jint.Native.ArrayBuffer;
 using Jint.Native.Number;
 using Jint.Native.Object;
@@ -11,7 +10,7 @@ namespace Jint.Native.TypedArray
 {
     public sealed class TypedArrayInstance : ObjectInstance
     {
-        internal TypedArrayContentType _contentType;
+        internal readonly TypedArrayContentType _contentType;
         internal readonly TypedArrayElementType _arrayElementType;
         internal ArrayBufferInstance _viewedArrayBuffer;
         internal uint _byteLength;
@@ -35,6 +34,10 @@ namespace Jint.Native.TypedArray
         {
             _arrayElementType = type;
             _arrayLength = length;
+
+            _contentType = type != TypedArrayElementType.BigInt64 && type != TypedArrayElementType.BigUint64
+                ? TypedArrayContentType.Number
+                : TypedArrayContentType.BigInt;
         }
 
         internal JsValue this[int index]
@@ -139,7 +142,7 @@ namespace Jint.Native.TypedArray
         /// </summary>
         public override bool DefineOwnProperty(JsValue property, PropertyDescriptor desc)
         {
-            if (property.IsNumber() || property.IsString())
+            if (property.IsString())
             {
                 var numericIndex = TypeConverter.CanonicalNumericIndexString(property);
                 if (numericIndex is not null)
@@ -258,16 +261,23 @@ namespace Jint.Native.TypedArray
             var elementSize = elementType.GetElementSize();
             var indexedPosition = index * elementSize + offset;
             var value = _viewedArrayBuffer.GetValueFromBuffer(indexedPosition, elementType, true, ArrayBufferOrder.Unordered);
-            return _arrayElementType.FitsInt32() ? JsNumber.Create((int) value) : JsNumber.Create(value);
+            if (value.Type == Types.Number)
+            {
+                return _arrayElementType.FitsInt32()
+                    ? JsNumber.Create((int) value.DoubleValue)
+                    : JsNumber.Create(value.DoubleValue);
+            }
+
+            return JsBigInt.Create(value.BigInteger);
         }
 
         // helper tot prevent floating point
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void IntegerIndexedElementSet(int index, JsValue value)
+        internal void IntegerIndexedElementSet(int index, JsValue value)
         {
-            var numValue = _contentType == TypedArrayContentType.BigInt
-                ? TypeConverter.ToBigInt(value)
-                : TypeConverter.ToNumber(value);
+            TypedArrayValue numValue = _contentType != TypedArrayContentType.BigInt 
+                ? TypeConverter.ToNumber(value) 
+                : value.ToBigInteger(_engine);
 
             if (IsValidIntegerIndex(index))
             {
@@ -281,17 +291,32 @@ namespace Jint.Native.TypedArray
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void IntegerIndexedElementSet(double index, JsValue value)
         {
-            var numValue = _contentType == TypedArrayContentType.BigInt
-                ? TypeConverter.ToBigInt(value)
-                : TypeConverter.ToNumber(value);
-
-            if (IsValidIntegerIndex(index))
+            if (_contentType != TypedArrayContentType.BigInt)
             {
-                DoIntegerIndexedElementSet((int) index, numValue);
+                var numValue = TypeConverter.ToNumber(value);
+                if (IsValidIntegerIndex(index))
+                {
+                    DoIntegerIndexedElementSet((int) index, numValue);
+                }
+            }
+            else
+            {
+                try
+                {
+                    var numValue = TypeConverter.ToBigInt(value);
+                    if (IsValidIntegerIndex(index))
+                    {
+                        DoIntegerIndexedElementSet((int) index, numValue);
+                    }
+                }
+                catch (ParserException ex)
+                {
+                    ExceptionHelper.ThrowSyntaxError(_engine.Realm, ex.Message);
+                }
             }
         }
 
-        internal void DoIntegerIndexedElementSet(int index, double numValue)
+        internal void DoIntegerIndexedElementSet(int index, TypedArrayValue numValue)
         {
             var offset = _byteOffset;
             var elementType = _arrayElementType;
@@ -306,10 +331,27 @@ namespace Jint.Native.TypedArray
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private bool IsValidIntegerIndex(double index)
         {
-            return !_viewedArrayBuffer.IsDetachedBuffer
-                   && IsIntegralNumber(index)
-                   && !NumberInstance.IsNegativeZero(index)
-                   && (uint) index < _arrayLength;
+            if (_viewedArrayBuffer.IsDetachedBuffer)
+            {
+                return false;
+            }
+
+            if (!TypeConverter.IsIntegralNumber(index))
+            {
+                return false;
+            }
+
+            if (NumberInstance.IsNegativeZero(index))
+            {
+                return false;
+            }
+
+            if (index < 0 || index >= _arrayLength)
+            {
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -319,17 +361,6 @@ namespace Jint.Native.TypedArray
         private bool IsValidIntegerIndex(int index)
         {
             return !_viewedArrayBuffer.IsDetachedBuffer && (uint) index < _arrayLength;
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-isintegralnumber
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool IsIntegralNumber(double value)
-        {
-            return !double.IsNaN(value)
-                   && !double.IsInfinity(value)
-                   && System.Math.Floor(System.Math.Abs(value)) == System.Math.Abs(value);
         }
 
         internal T[] ToNativeArray<T>()

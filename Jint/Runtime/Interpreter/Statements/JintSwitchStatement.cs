@@ -8,8 +8,8 @@ namespace Jint.Runtime.Interpreter.Statements
     /// </summary>
     internal sealed class JintSwitchStatement : JintStatement<SwitchStatement>
     {
-        private JintSwitchBlock _switchBlock;
-        private JintExpression _discriminant;
+        private JintSwitchBlock _switchBlock = null!;
+        private JintExpression _discriminant = null!;
 
         public JintSwitchStatement(SwitchStatement statement) : base(statement)
         {
@@ -17,18 +17,17 @@ namespace Jint.Runtime.Interpreter.Statements
 
         protected override void Initialize(EvaluationContext context)
         {
-            var engine = context.Engine;
             _switchBlock = new JintSwitchBlock(_statement.Cases);
-            _discriminant = JintExpression.Build(engine, _statement.Discriminant);
+            _discriminant = JintExpression.Build(_statement.Discriminant);
         }
 
         protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            var value = _discriminant.GetValue(context).Value;
+            var value = _discriminant.GetValue(context);
             var r = _switchBlock.Execute(context, value);
-            if (r.Type == CompletionType.Break && r.Target == _statement.LabelSet?.Name)
+            if (r.Type == CompletionType.Break && context.Target == _statement.LabelSet?.Name)
             {
-                return NormalCompletion(r.Value);
+                return new Completion(CompletionType.Normal, r.Value, ((JintStatement) this)._statement);
             }
 
             return r;

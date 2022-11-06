@@ -1,13 +1,12 @@
-﻿using Jint.Runtime.Environments;
+using Jint.Runtime.Environments;
 using System.Collections;
-using System.Collections.Generic;
 
 namespace Jint.Runtime.Debugger
 {
     public sealed class DebugScopes : IReadOnlyList<DebugScope>
     {
-        private readonly HashSet<string> _foundBindings = new HashSet<string>();
-        private readonly List<DebugScope> _scopes = new List<DebugScope>();
+        private readonly HashSet<string> _foundBindings = new();
+        private readonly List<DebugScope> _scopes = new();
 
         internal DebugScopes(EnvironmentRecord environment)
         {
@@ -15,29 +14,37 @@ namespace Jint.Runtime.Debugger
         }
 
         /// <summary>
-        /// Shortcut to Global scope
+        /// Shortcut to Global scope.
         /// </summary>
-        public DebugScope Global { get; private set; }
+        /// <remarks>
+        /// Note that this only includes the object environment record of the Global scope - i.e. it doesn't
+        /// include block scope bindings (let/const).
+        /// </remarks>
+        public DebugScope? Global { get; private set; }
 
         /// <summary>
-        /// Shortcut to Local scope. Note that this is only present inside functions, and only includes
-        /// function scope bindings.
+        /// Shortcut to Local scope.
         /// </summary>
-        public DebugScope Local { get; private set; }
+        /// <remarks>
+        /// Note that this is only present inside functions, and doesn't include block scope bindings (let/const)
+        /// </remarks>
+        public DebugScope? Local { get; private set; }
 
         public DebugScope this[int index] => _scopes[index];
         public int Count => _scopes.Count;
 
-        private void Populate(EnvironmentRecord environment)
+        private void Populate(EnvironmentRecord? environment)
         {
             bool inLocalScope = true;
             while (environment != null)
             {
-                EnvironmentRecord record = environment;
+                var record = environment;
                 switch (record)
                 {
-                    case GlobalEnvironmentRecord:
-                        AddScope(DebugScopeType.Global, record);
+                    case GlobalEnvironmentRecord global:
+                        // Similarly to Chromium, we split the Global environment into Global and Script scopes
+                        AddScope(DebugScopeType.Script, global._declarativeRecord);
+                        AddScope(DebugScopeType.Global, new ObjectEnvironmentRecord(environment._engine, global._global, false, false));
                         break;
                     case FunctionEnvironmentRecord:
                         AddScope(inLocalScope ? DebugScopeType.Local : DebugScopeType.Closure, record);
@@ -56,7 +63,7 @@ namespace Jint.Runtime.Debugger
                         else
                         {
                             bool isTopLevel = environment._outerEnv is FunctionEnvironmentRecord;
-                            AddScope(DebugScopeType.Block, record, isTopLevel);
+                            AddScope(DebugScopeType.Block, record, isTopLevel: isTopLevel);
                         }
                         break;
                 }

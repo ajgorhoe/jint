@@ -1,9 +1,11 @@
-﻿using System;
 using System.Diagnostics.Contracts;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using Esprima;
 using Jint.Native;
 using Jint.Native.Array;
 using Jint.Native.Date;
+using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Native.Promise;
 using Jint.Native.RegExp;
@@ -54,7 +56,7 @@ namespace Jint
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsRegExp(this JsValue value)
         {
-            if (!(value is ObjectInstance oi))
+            if (value is not ObjectInstance oi)
             {
                 return false;
             }
@@ -87,6 +89,13 @@ namespace Jint
         public static bool IsNumber(this JsValue value)
         {
             return (value._type & (InternalTypes.Number | InternalTypes.Integer)) != 0;
+        }
+
+        [Pure]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsBigInt(this JsValue value)
+        {
+            return (value._type & InternalTypes.BigInt) != 0;
         }
 
         [Pure]
@@ -126,7 +135,7 @@ namespace Jint
                 ExceptionHelper.ThrowArgumentException("The value is not a date");
             }
 
-            return value as DateInstance;
+            return (DateInstance) value;
         }
 
         [Pure]
@@ -137,7 +146,7 @@ namespace Jint
                 ExceptionHelper.ThrowArgumentException("The value is not a regex");
             }
 
-            return value as RegExpInstance;
+            return (RegExpInstance) value;
         }
 
         [Pure]
@@ -149,7 +158,7 @@ namespace Jint
                 ExceptionHelper.ThrowArgumentException("The value is not an object");
             }
 
-            return value as ObjectInstance;
+            return (ObjectInstance) value;
         }
 
         [Pure]
@@ -161,7 +170,7 @@ namespace Jint
                 ExceptionHelper.ThrowArgumentException("The value is not an object");
             }
 
-            return value as TInstance;
+            return (value as TInstance)!;
         }
 
         [Pure]
@@ -173,7 +182,7 @@ namespace Jint
                 ExceptionHelper.ThrowArgumentException("The value is not an array");
             }
 
-            return value as ArrayInstance;
+            return (ArrayInstance) value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -202,6 +211,12 @@ namespace Jint
         internal static int AsInteger(this JsValue value)
         {
             return (int) ((JsNumber) value)._value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static BigInteger AsBigInt(this JsValue value)
+        {
+            return ((JsBigInt) value)._value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -343,13 +358,12 @@ namespace Jint
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static long[] AsBigInt64Array(this JsValue value)
         {
-            if (!value.IsUint32Array())
+            if (!value.IsBigInt64Array())
             {
                 ThrowWrongTypeException(value, "BigInt64Array");
             }
 
-            ExceptionHelper.ThrowNotImplementedException();
-            return null;
+            return ((TypedArrayInstance) value).ToNativeArray<long>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -366,20 +380,19 @@ namespace Jint
                 ThrowWrongTypeException(value, "BigUint64Array");
             }
 
-            ExceptionHelper.ThrowNotImplementedException();
-            return null;
+            return ((TypedArrayInstance) value).ToNativeArray<ulong>();
         }
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static T TryCast<T>(this JsValue value) where T : class
+        public static T? TryCast<T>(this JsValue value) where T : class
         {
             return value as T;
         }
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static T TryCast<T>(this JsValue value, Action<JsValue> fail) where T : class
+        public static T? TryCast<T>(this JsValue value, Action<JsValue> fail) where T : class
         {
             if (value is T o)
             {
@@ -393,7 +406,7 @@ namespace Jint
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static T As<T>(this JsValue value) where T : ObjectInstance
+        public static T? As<T>(this JsValue value) where T : ObjectInstance
         {
             if (value.IsObject())
             {
@@ -405,28 +418,41 @@ namespace Jint
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool IsCallable(this JsValue value)
+        public static FunctionInstance AsFunctionInstance(this JsValue value)
         {
-            return value.IsCallable;
-        }
-
-        [Pure]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static ICallable AsCallable(this JsValue value)
-        {
-            if (!value.IsCallable())
+            if (value is not FunctionInstance instance)
             {
-                ThrowWrongTypeException(value, "Callable");
+                ThrowWrongTypeException(value, "FunctionInstance");
+                return null!;
             }
 
-            return value as ICallable;
+            return instance;
         }
 
         [Pure]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static JsValue Call(this ICallable value, params JsValue[] arguments)
+        public static JsValue Call(this JsValue value, params JsValue[] arguments)
         {
-            return value.Call(JsValue.Undefined, arguments);
+            if (value is not ObjectInstance objectInstance)
+            {
+                ExceptionHelper.ThrowArgumentException(value + " is not object");
+                return null;
+            }
+
+            return objectInstance.Engine.Call(value, arguments);
+        }
+
+        [Pure]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static JsValue Call(this JsValue value, JsValue thisObj, params JsValue[] arguments)
+        {
+            if (value is not ObjectInstance objectInstance)
+            {
+                ExceptionHelper.ThrowArgumentException(value + " is not object");
+                return null;
+            }
+
+            return objectInstance.Engine.Call(value, thisObj, arguments);
         }
 
         /// <summary>
@@ -466,6 +492,19 @@ namespace Jint
         private static void ThrowWrongTypeException(JsValue value, string expectedType)
         {
             ExceptionHelper.ThrowArgumentException($"Expected {expectedType} but got {value._type}");
+        }
+
+        internal static BigInteger ToBigInteger(this JsValue value, Engine engine)
+        {
+            try
+            {
+                return TypeConverter.ToBigInt(value);
+            }
+            catch (ParserException ex)
+            {
+                ExceptionHelper.ThrowSyntaxError(engine.Realm, ex.Message);
+                return default;
+            }
         }
     }
 }

@@ -1,4 +1,3 @@
-﻿using System.Collections.Generic;
 using System.Threading;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -17,12 +16,12 @@ namespace Jint.Native.Argument
     public sealed class ArgumentsInstance : ObjectInstance
     {
         // cache property container for array iteration for less allocations
-        private static readonly ThreadLocal<HashSet<string>> _mappedNamed = new ThreadLocal<HashSet<string>>(() => new HashSet<string>());
+        private static readonly ThreadLocal<HashSet<string>> _mappedNamed = new(() => new HashSet<string>());
 
-        private FunctionInstance _func;
-        private Key[] _names;
-        private JsValue[] _args;
-        private DeclarativeEnvironmentRecord _env;
+        private FunctionInstance _func = null!;
+        private Key[] _names = null!;
+        private JsValue[] _args = null!;
+        private DeclarativeEnvironmentRecord _env = null!;
         private bool _canReturnToPool;
         private bool _hasRestParameter;
         private bool _materialized;
@@ -67,11 +66,11 @@ namespace Jint.Native.Argument
                     CreateDataProperty(JsString.Create(i), val);
                 }
 
-                DefinePropertyOrThrow(CommonProperties.Callee, _engine._callerCalleeArgumentsThrowerNonConfigurable);
+                DefinePropertyOrThrow(CommonProperties.Callee, new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(_engine, PropertyFlag.CustomJsValue));
             }
             else
             {
-                ObjectInstance map = null;
+                ObjectInstance? map = null;
                 if (args.Length > 0)
                 {
                     var mappedNamed = _mappedNamed.Value;
@@ -103,7 +102,7 @@ namespace Jint.Native.Argument
             DefinePropertyOrThrow(GlobalSymbolRegistry.Iterator, new PropertyDescriptor(iteratorFunction, PropertyFlag.Writable | PropertyFlag.Configurable));
         }
 
-        public ObjectInstance ParameterMap { get; set; }
+        public ObjectInstance? ParameterMap { get; set; }
 
         internal override bool IsIntegerIndexedArray => true;
 

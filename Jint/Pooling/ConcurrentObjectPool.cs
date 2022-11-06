@@ -1,3 +1,5 @@
+#nullable disable
+
 // Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the Apache License, Version 2.0.  See License.txt in the project root for license information.
 
 // define TRACE_LEAKS to get additional diagnostics that can lead to the leak sources. note: it will
@@ -10,7 +12,6 @@
 // #define DETECT_LEAKS  //for now always enable DETECT_LEAKS in debug.
 // #endif
 
-using System;
 using System.Diagnostics;
 using System.Threading;
 

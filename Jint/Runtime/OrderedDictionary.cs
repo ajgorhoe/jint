@@ -1,9 +1,10 @@
+#nullable disable
+
 // based on https://github.com/jehugaleahsa/truncon.collections.OrderedDictionary
 // https://github.com/jehugaleahsa/truncon.collections.OrderedDictionary/blob/master/UNLICENSE.txt
 
 
 using System.Collections;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;

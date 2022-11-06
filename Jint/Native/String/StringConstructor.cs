@@ -1,9 +1,7 @@
-﻿using System.Collections.Generic;
-using Jint.Collections;
+﻿using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.Function;
 using Jint.Native.Object;
-using Jint.Native.Symbol;
 using Jint.Pooling;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -12,6 +10,9 @@ using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Native.String
 {
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-string-constructor
+    /// </summary>
     public sealed class StringConstructor : FunctionInstance, IConstructor
     {
         private static readonly JsString _functionName = new JsString("String");
@@ -42,15 +43,26 @@ namespace Jint.Native.String
             SetProperties(properties);
         }
 
-        private static JsValue FromCharCode(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-string.fromcharcode
+        /// </summary>
+        private static JsValue FromCharCode(JsValue? thisObj, JsValue[] arguments)
         {
-            var chars = new char[arguments.Length];
-            for (var i = 0; i < chars.Length; i++ )
+            var length = arguments.Length;
+
+            if (length == 0)
             {
-                chars[i] = (char)TypeConverter.ToUint16(arguments[i]);
+                return JsString.Empty;
             }
 
-            return JsString.Create(new string(chars));
+            var elements = new char[length];
+            for (var i = 0; i < elements.Length; i++ )
+            {
+                var nextCu = TypeConverter.ToUint16(arguments[i]);
+                elements[i] = (char) nextCu;
+            }
+
+            return JsString.Create(new string(elements));
         }
 
         private JsValue FromCodePoint(JsValue thisObj, JsValue[] arguments)
@@ -126,7 +138,7 @@ namespace Jint.Native.String
             return result.ToString();
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             if (arguments.Length == 0)
             {
@@ -144,7 +156,7 @@ namespace Jint.Native.String
         /// <summary>
         /// https://tc39.es/ecma262/#sec-string-constructor-string-value
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
             JsString s;
             if (arguments.Length == 0)
@@ -156,7 +168,7 @@ namespace Jint.Native.String
                 var value = arguments.At(0);
                 if (newTarget.IsUndefined() && value.IsSymbol())
                 {
-                    return StringCreate(JsString.Create(SymbolPrototype.SymbolDescriptiveString((JsSymbol) value)), PrototypeObject);
+                    return StringCreate(JsString.Create(((JsSymbol) value).ToString()), PrototypeObject);
                 }
                 s = TypeConverter.ToJsString(arguments[0]);
             }
@@ -184,11 +196,9 @@ namespace Jint.Native.String
         /// </summary>
         private StringInstance StringCreate(JsString value, ObjectInstance prototype)
         {
-            var instance = new StringInstance(Engine)
+            var instance = new StringInstance(Engine, value)
             {
-                _prototype = prototype,
-                PrimitiveValue = value,
-                _length = PropertyDescriptor.AllForbiddenDescriptor.ForNumber(value.Length)
+                _prototype = prototype
             };
 
             return instance;

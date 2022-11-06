@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Iterator;
@@ -14,7 +13,8 @@ namespace Jint.Native.Promise
         JsValue PromiseInstance,
         ICallable Resolve,
         ICallable Reject,
-        JsValue RejectObj
+        JsValue RejectObj,
+        JsValue ResolveObj
     );
 
     public sealed class PromiseConstructor : FunctionInstance, IConstructor
@@ -40,59 +40,64 @@ namespace Jint.Native.Promise
         {
             const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
             const PropertyFlag lengthFlags = PropertyFlag.Configurable;
-            var properties = new PropertyDictionary(5, checkExistingKeys: false)
+            var properties = new PropertyDictionary(6, checkExistingKeys: false)
             {
-                ["resolve"] =
-                    new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "resolve", Resolve, 1, lengthFlags),
-                        propertyFlags)),
-                ["reject"] =
-                    new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "reject", Reject, 1, lengthFlags),
-                        propertyFlags)),
-                ["all"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "all", All, 1, lengthFlags),
-                    propertyFlags)),
-                ["race"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "race", Race, 1, lengthFlags),
-                    propertyFlags)),
+                ["resolve"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "resolve", Resolve, 1, lengthFlags), propertyFlags)),
+                ["reject"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "reject", Reject, 1, lengthFlags), propertyFlags)),
+                ["all"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "all", All, 1, lengthFlags), propertyFlags)),
+                ["allSettled"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "allSettled", AllSettled, 1, lengthFlags), propertyFlags)),
+                ["any"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "any", Any, 1, lengthFlags), propertyFlags)),
+                ["race"] = new(new PropertyDescriptor(new ClrFunctionInstance(Engine, "race", Race, 1, lengthFlags), propertyFlags)),
             };
             SetProperties(properties);
 
             var symbols = new SymbolDictionary(1)
             {
                 [GlobalSymbolRegistry.Species] = new GetSetPropertyDescriptor(
-                    get: new ClrFunctionInstance(_engine, "get [Symbol.species]", (thisObj, _) => thisObj, 0,
-                        PropertyFlag.Configurable),
+                    get: new ClrFunctionInstance(_engine, "get [Symbol.species]", (thisObj, _) => thisObj, 0, PropertyFlag.Configurable),
                     set: Undefined, PropertyFlag.Configurable)
             };
             SetSymbols(symbols);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             ExceptionHelper.ThrowTypeError(_realm, "Constructor Promise requires 'new'");
             return null;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-promise-executor
+        /// </summary>
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
             if (newTarget.IsUndefined())
             {
                 ExceptionHelper.ThrowTypeError(_realm, "Constructor Promise requires 'new'");
             }
 
-            var promiseExecutor = arguments.At(0) as ICallable;
-            if (promiseExecutor is null)
+            if (arguments.At(0) is not ICallable executor)
             {
                 ExceptionHelper.ThrowTypeError(_realm, $"Promise executor {(arguments.At(0))} is not a function");
+                return null;
             }
 
-            var instance = OrdinaryCreateFromConstructor(
+            var promise = OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.Promise.PrototypeObject,
-                static(engine, realm, _) => new PromiseInstance(engine));
+                static (Engine engine, Realm _, object? _) => new PromiseInstance(engine));
 
-            var (resolve, reject) = instance.CreateResolvingFunctions();
-            promiseExecutor.Call(Undefined, new JsValue[] {resolve, reject});
+            var (resolve, reject) = promise.CreateResolvingFunctions();
+            try
+            {
+                executor.Call(Undefined, new JsValue[] { resolve, reject });
+            }
+            catch (JavaScriptException e)
+            {
+                reject.Call(JsValue.Undefined, new[] { e.Error });
+            }
 
-            return instance;
+            return promise;
         }
 
         // The abstract operation PromiseResolve takes arguments C (a constructor) and x (an ECMAScript language value).
@@ -127,9 +132,9 @@ namespace Jint.Native.Promise
                 }
             }
 
-            var (instance, resolve, _, _) = NewPromiseCapability(_engine, thisObj);
+            var (instance, resolve, _, _, _) = NewPromiseCapability(_engine, thisObj);
 
-            resolve.Call(Undefined, new[] {x});
+            resolve.Call(Undefined, new[] { x });
 
             return instance;
         }
@@ -148,53 +153,42 @@ namespace Jint.Native.Promise
 
             var r = arguments.At(0);
 
-            var (instance, _, reject, _) = NewPromiseCapability(_engine, thisObj);
+            var (instance, _, reject, _, _) = NewPromiseCapability(_engine, thisObj);
 
-            reject.Call(Undefined, new[] {r});
+            reject.Call(Undefined, new[] { r });
 
             return instance;
         }
 
-        // https://tc39.es/ecma262/#sec-promise.all
-        // The all function returns a new promise which is fulfilled with an array of fulfillment values for the passed promises,
-        // or rejects with the reason of the first passed promise that rejects. It resolves all elements of the passed iterable to promises as it runs this algorithm.
-        //
-        // 1. Let C be the this value.
-        // 2. Let promiseCapability be ? NewPromiseCapability(C).
-        //     3. Let promiseResolve be GetPromiseResolve(C).
-        //     4. IfAbruptRejectPromise(promiseResolve, promiseCapability).
-        //     5. Let iteratorRecord be GetIterator(iterable).
-        //     6. IfAbruptRejectPromise(iteratorRecord, promiseCapability).
-        //     7. Let result be PerformPromiseAll(iteratorRecord, C, promiseCapability, promiseResolve).
-        //     8. If result is an abrupt completion, then
-        //     a. If iteratorRecord.[[Done]] is false, set result to IteratorClose(iteratorRecord, result).
-        // b. IfAbruptRejectPromise(result, promiseCapability).
-        // 9. Return Completion(result)
-        private JsValue All(JsValue thisObj, JsValue[] arguments)
+        // This helper methods executes the first 6 steps in the specs belonging to static Promise methods like all, any etc.
+        // If it returns false, that means it has an error and it is already rejected
+        // If it returns true, the logic specific to the calling function should continue executing
+        private bool TryGetPromiseCapabilityAndIterator(JsValue thisObj, JsValue[] arguments, string callerName, out PromiseCapability capability, out ICallable promiseResolve, out IteratorInstance iterator)
         {
             if (!thisObj.IsObject())
             {
-                ExceptionHelper.ThrowTypeError(_realm, "Promise.all called on non-object");
+                ExceptionHelper.ThrowTypeError(_realm, $"{callerName} called on non-object");
             }
 
             //2. Let promiseCapability be ? NewPromiseCapability(C).
-            var (resultingPromise, resolve, reject, rejectObj) = NewPromiseCapability(_engine, thisObj);
+            capability = NewPromiseCapability(_engine, thisObj);
+            var reject = capability.Reject;
 
             //3. Let promiseResolve be GetPromiseResolve(C).
             // 4. IfAbruptRejectPromise(promiseResolve, promiseCapability).
-            ICallable promiseResolve;
             try
             {
                 promiseResolve = GetPromiseResolve(thisObj);
             }
             catch (JavaScriptException e)
             {
-                reject.Call(Undefined, new[] {e.Error});
-                return resultingPromise;
+                reject.Call(Undefined, new[] { e.Error });
+                promiseResolve = null!;
+                iterator = null!;
+                return false;
             }
 
 
-            IteratorInstance iterator;
             // 5. Let iteratorRecord be GetIterator(iterable).
             // 6. IfAbruptRejectPromise(iteratorRecord, promiseCapability).
 
@@ -202,7 +196,7 @@ namespace Jint.Native.Promise
             {
                 if (arguments.Length == 0)
                 {
-                    ExceptionHelper.ThrowTypeError(_realm, "no arguments were passed to Promise.all");
+                    ExceptionHelper.ThrowTypeError(_realm, $"no arguments were passed to {callerName}");
                 }
 
                 var iterable = arguments.At(0);
@@ -211,9 +205,21 @@ namespace Jint.Native.Promise
             }
             catch (JavaScriptException e)
             {
-                reject.Call(Undefined, new[] {e.Error});
-                return resultingPromise;
+                reject.Call(Undefined, new[] { e.Error });
+                iterator = null!;
+                return false;
             }
+
+            return true;
+        }
+
+        // https://tc39.es/ecma262/#sec-promise.all
+        private JsValue All(JsValue thisObj, JsValue[] arguments)
+        {
+            if (!TryGetPromiseCapabilityAndIterator(thisObj, arguments, "Promise.all", out var capability, out var promiseResolve, out var iterator))
+                return capability.PromiseInstance;
+
+            var (resultingPromise, resolve, reject, _, rejectObj) = capability;
 
             var results = new List<JsValue>();
             bool doneIterating = false;
@@ -254,28 +260,28 @@ namespace Jint.Native.Promise
                     }
                     catch (JavaScriptException e)
                     {
-                        reject.Call(Undefined, new[] {e.Error});
+                        reject.Call(Undefined, new[] { e.Error });
                         return resultingPromise;
                     }
 
                     // note that null here is important
                     // it will help to detect if all inner promises were resolved
                     // In F# it would be Option<JsValue>
-                    results.Add(null);
+                    results.Add(null!);
 
-                    var item = promiseResolve.Call(thisObj, new JsValue[] {value});
+                    var item = promiseResolve.Call(thisObj, new JsValue[] { value });
                     var thenProps = item.Get("then");
                     if (thenProps is ICallable thenFunc)
                     {
                         var capturedIndex = index;
 
-                        var fulfilled = false;
+                        var alreadyCalled = false;
                         var onSuccess =
                             new ClrFunctionInstance(_engine, "", (_, args) =>
                             {
-                                if (!fulfilled)
+                                if (!alreadyCalled)
                                 {
-                                    fulfilled = true;
+                                    alreadyCalled = true;
                                     results[capturedIndex] = args.At(0);
                                     ResolveIfFinished();
                                 }
@@ -283,7 +289,7 @@ namespace Jint.Native.Promise
                                 return Undefined;
                             }, 1, PropertyFlag.Configurable);
 
-                        thenFunc.Call(item, new JsValue[] {onSuccess, rejectObj});
+                        thenFunc.Call(item, new JsValue[] { onSuccess, rejectObj });
                     }
                     else
                     {
@@ -296,16 +302,230 @@ namespace Jint.Native.Promise
             catch (JavaScriptException e)
             {
                 iterator.Close(CompletionType.Throw);
-                reject.Call(Undefined, new[] {e.Error});
+                reject.Call(Undefined, new[] { e.Error });
                 return resultingPromise;
             }
 
-            // if there were not items but the iteration was successful
-            // e.g. "[]" empty array as an example
-            // resolve the promise sync
-            if (results.Count == 0)
+            return resultingPromise;
+        }
+
+        // https://tc39.es/ecma262/#sec-promise.allsettled
+        private JsValue AllSettled(JsValue thisObj, JsValue[] arguments)
+        {
+            if (!TryGetPromiseCapabilityAndIterator(thisObj, arguments, "Promise.allSettled", out var capability, out var promiseResolve, out var iterator))
+                return capability.PromiseInstance;
+
+            var (resultingPromise, resolve, reject, _, rejectObj) = capability;
+
+            var results = new List<JsValue>();
+            bool doneIterating = false;
+
+            void ResolveIfFinished()
             {
-                resolve.Call(Undefined, new JsValue[] {_realm.Intrinsics.Array.ConstructFast(0)});
+                // that means all of them were resolved
+                // Note that "Undefined" is not null, thus the logic is sound, even though awkward
+                // also note that it is important to check if we are done iterating.
+                // if "then" method is sync then it will be resolved BEFORE the next iteration cycle
+                if (results.TrueForAll(static x => x != null) && doneIterating)
+                {
+                    var array = _realm.Intrinsics.Array.ConstructFast(results);
+                    resolve.Call(Undefined, new JsValue[] { array });
+                }
+            }
+
+            // 27.2.4.1.2 PerformPromiseAll ( iteratorRecord, constructor, resultCapability, promiseResolve )
+            // https://tc39.es/ecma262/#sec-performpromiseall
+            try
+            {
+                int index = 0;
+
+                do
+                {
+                    JsValue value;
+                    try
+                    {
+                        if (!iterator.TryIteratorStep(out var nextItem))
+                        {
+                            doneIterating = true;
+
+                            ResolveIfFinished();
+                            break;
+                        }
+
+                        value = nextItem.Get(CommonProperties.Value);
+                    }
+                    catch (JavaScriptException e)
+                    {
+                        reject.Call(Undefined, new[] { e.Error });
+                        return resultingPromise;
+                    }
+
+                    // note that null here is important
+                    // it will help to detect if all inner promises were resolved
+                    // In F# it would be Option<JsValue>
+                    results.Add(null!);
+
+                    var item = promiseResolve.Call(thisObj, new JsValue[] { value });
+                    var thenProps = item.Get("then");
+                    if (thenProps is ICallable thenFunc)
+                    {
+                        var capturedIndex = index;
+
+                        var alreadyCalled = false;
+                        var onSuccess =
+                            new ClrFunctionInstance(_engine, "", (_, args) =>
+                            {
+                                if (!alreadyCalled)
+                                {
+                                    alreadyCalled = true;
+
+                                    var res = Engine.Realm.Intrinsics.Object.Construct(2);
+                                    res.FastAddProperty("status", "fulfilled", true, true, true);
+                                    res.FastAddProperty("value", args.At(0), true, true, true);
+                                    results[capturedIndex] = res;
+
+                                    ResolveIfFinished();
+                                }
+
+                                return Undefined;
+                            }, 1, PropertyFlag.Configurable);
+                        var onFailure =
+                            new ClrFunctionInstance(_engine, "", (_, args) =>
+                            {
+                                if (!alreadyCalled)
+                                {
+                                    alreadyCalled = true;
+
+                                    var res = Engine.Realm.Intrinsics.Object.Construct(2);
+                                    res.FastAddProperty("status", "rejected", true, true, true);
+                                    res.FastAddProperty("reason", args.At(0), true, true, true);
+                                    results[capturedIndex] = res;
+
+                                    ResolveIfFinished();
+                                }
+
+                                return Undefined;
+                            }, 1, PropertyFlag.Configurable);
+
+                        thenFunc.Call(item, new JsValue[] { onSuccess, onFailure });
+                    }
+                    else
+                    {
+                        ExceptionHelper.ThrowTypeError(_realm, "Passed non Promise-like value");
+                    }
+
+                    index += 1;
+                } while (true);
+            }
+            catch (JavaScriptException e)
+            {
+                iterator.Close(CompletionType.Throw);
+                reject.Call(Undefined, new[] { e.Error });
+                return resultingPromise;
+            }
+
+            return resultingPromise;
+        }
+
+        // https://tc39.es/ecma262/#sec-promise.any
+        private JsValue Any(JsValue thisObj, JsValue[] arguments)
+        {
+            if (!TryGetPromiseCapabilityAndIterator(thisObj, arguments, "Promise.any", out var capability, out var promiseResolve, out var iterator))
+            {
+                return capability.PromiseInstance;
+            }
+
+            var (resultingPromise, resolve, reject, resolveObj, _) = capability;
+
+            var errors = new List<JsValue>();
+            var doneIterating = false;
+
+            void RejectIfAllRejected()
+            {
+                // that means all of them were rejected
+                // Note that "Undefined" is not null, thus the logic is sound, even though awkward
+                // also note that it is important to check if we are done iterating.
+                // if "then" method is sync then it will be resolved BEFORE the next iteration cycle
+
+                if (errors.TrueForAll(static x => x != null) && doneIterating)
+                {
+                    var array = _realm.Intrinsics.Array.ConstructFast(errors);
+
+                    reject.Call(Undefined, new JsValue[] { Construct(_realm.Intrinsics.AggregateError, new JsValue[] { array }) });
+                }
+            }
+
+            // https://tc39.es/ecma262/#sec-performpromiseany
+            try
+            {
+                var index = 0;
+
+                do
+                {
+                    ObjectInstance? nextItem = null;
+                    JsValue value;
+                    try
+                    {
+                        if (!iterator.TryIteratorStep(out nextItem))
+                        {
+                            doneIterating = true;
+                            RejectIfAllRejected();
+                            break;
+                        }
+
+                        value = nextItem.Get(CommonProperties.Value);
+                    }
+                    catch (JavaScriptException e)
+                    {
+                        if (nextItem?.Get("done")?.AsBoolean() == false)
+                        {
+                            throw;
+                        }
+                        errors.Add(e.Error);
+                        continue;
+                    }
+
+                    // note that null here is important
+                    // it will help to detect if all inner promises were rejected
+                    // In F# it would be Option<JsValue>
+                    errors.Add(null!);
+
+                    var item = promiseResolve.Call(thisObj, new JsValue[] { value });
+                    var thenProps = item.Get("then");
+                    if (thenProps is ICallable thenFunc)
+                    {
+                        var capturedIndex = index;
+
+                        var alreadyCalled = false;
+
+                        var onError =
+                            new ClrFunctionInstance(_engine, "", (_, args) =>
+                            {
+                                if (!alreadyCalled)
+                                {
+                                    alreadyCalled = true;
+                                    errors[capturedIndex] = args.At(0);
+                                    RejectIfAllRejected();
+                                }
+
+                                return Undefined;
+                            }, 1, PropertyFlag.Configurable);
+
+                        thenFunc.Call(item, new JsValue[] { resolveObj, onError });
+                    }
+                    else
+                    {
+                        ExceptionHelper.ThrowTypeError(_realm, "Passed non Promise-like value");
+                    }
+
+                    index += 1;
+                } while (true);
+            }
+            catch (JavaScriptException e)
+            {
+                iterator.Close(CompletionType.Throw);
+                reject.Call(Undefined, new[] { e.Error });
+                return resultingPromise;
             }
 
             return resultingPromise;
@@ -314,48 +534,11 @@ namespace Jint.Native.Promise
         // https://tc39.es/ecma262/#sec-promise.race
         private JsValue Race(JsValue thisObj, JsValue[] arguments)
         {
-            if (!thisObj.IsObject())
-            {
-                ExceptionHelper.ThrowTypeError(_realm, "Promise.all called on non-object");
-            }
+            if (!TryGetPromiseCapabilityAndIterator(thisObj, arguments, "Promise.race", out var capability, out var promiseResolve, out var iterator))
+                return capability.PromiseInstance;
 
-            // 2. Let promiseCapability be ? NewPromiseCapability(C).
-            var (resultingPromise, resolve, reject, rejectObj) = NewPromiseCapability(_engine, thisObj);
+            var (resultingPromise, resolve, reject, _, rejectObj) = capability;
 
-            // 3. Let promiseResolve be GetPromiseResolve(C).
-            // 4. IfAbruptRejectPromise(promiseResolve, promiseCapability).
-            ICallable promiseResolve;
-            try
-            {
-                promiseResolve = GetPromiseResolve(thisObj);
-            }
-            catch (JavaScriptException e)
-            {
-                reject.Call(Undefined, new[] {e.Error});
-                return resultingPromise;
-            }
-
-
-            IteratorInstance iterator;
-            // 5. Let iteratorRecord be GetIterator(iterable).
-            // 6. IfAbruptRejectPromise(iteratorRecord, promiseCapability).
-
-            try
-            {
-                if (arguments.Length == 0)
-                {
-                    ExceptionHelper.ThrowTypeError(_realm, "no arguments were passed to Promise.all");
-                }
-
-                var iterable = arguments.At(0);
-
-                iterator = iterable.GetIterator(_realm);
-            }
-            catch (JavaScriptException e)
-            {
-                reject.Call(Undefined, new[] {e.Error});
-                return resultingPromise;
-            }
 
             // 7. Let result be PerformPromiseRace(iteratorRecord, C, promiseCapability, promiseResolve).
             // https://tc39.es/ecma262/#sec-performpromiserace
@@ -375,16 +558,16 @@ namespace Jint.Native.Promise
                     }
                     catch (JavaScriptException e)
                     {
-                        reject.Call(Undefined, new[] {e.Error});
+                        reject.Call(Undefined, new[] { e.Error });
                         return resultingPromise;
                     }
 
                     // h. Let nextPromise be ? Call(promiseResolve, constructor, « nextValue »).
-                    var nextPromise = promiseResolve.Call(thisObj, new JsValue[] {nextValue});
+                    var nextPromise = promiseResolve.Call(thisObj, new JsValue[] { nextValue });
 
                     // i. Perform ? Invoke(nextPromise, "then", « resultCapability.[[Resolve]], resultCapability.[[Reject]] »).
 
-                    _engine.Invoke(nextPromise, "then", new[] {resolve as JsValue, rejectObj});
+                    _engine.Invoke(nextPromise, "then", new[] { (JsValue) resolve, rejectObj });
                 } while (true);
             }
             catch (JavaScriptException e)
@@ -393,7 +576,7 @@ namespace Jint.Native.Promise
                 // a. If iteratorRecord.[[Done]] is false, set result to IteratorClose(iteratorRecord, result).
                 //     b. IfAbruptRejectPromise(result, promiseCapability).
                 iterator.Close(CompletionType.Throw);
-                reject.Call(Undefined, new[] {e.Error});
+                reject.Call(Undefined, new[] { e.Error });
                 return resultingPromise;
             }
 
@@ -449,8 +632,8 @@ namespace Jint.Native.Promise
         {
             var ctor = AssertConstructor(engine, c);
 
-            JsValue resolveArg = null;
-            JsValue rejectArg = null;
+            JsValue? resolveArg = null;
+            JsValue? rejectArg = null;
 
             JsValue Executor(JsValue thisObj, JsValue[] arguments)
             {
@@ -473,10 +656,10 @@ namespace Jint.Native.Promise
 
             var executor = new ClrFunctionInstance(engine, "", Executor, 2, PropertyFlag.Configurable);
 
-            var instance = ctor.Construct(new JsValue[] {executor}, c);
+            var instance = ctor.Construct(new JsValue[] { executor }, c);
 
-            ICallable resolve = null;
-            ICallable reject = null;
+            ICallable? resolve = null;
+            ICallable? reject = null;
 
             if (resolveArg is ICallable resFunc)
             {
@@ -496,7 +679,7 @@ namespace Jint.Native.Promise
                 ExceptionHelper.ThrowTypeError(engine.Realm, "reject is not a function");
             }
 
-            return new PromiseCapability(instance, resolve, reject, rejectArg);
+            return new PromiseCapability(instance, resolve, reject, resolveArg, rejectArg);
         }
     }
 }

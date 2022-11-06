@@ -1,7 +1,6 @@
-﻿using System;
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
+using Jint.Native;
 using Jint.Native.Array;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -60,6 +59,14 @@ namespace Jint.Tests.Runtime
             Assert.Equal("/a/b", result);
         }
 
+        [Fact]
+        public void MatchAllIteratorReturnsCorrectNumberOfElements()
+        {
+            var engine = new Engine();
+            var result = engine.Evaluate("[...'one two three'.matchAll(/t/g)].length").AsInteger();
+            
+            Assert.Equal(2, result);
+        }
 
         [Fact]
         public void ToStringWithRealRegExpInstance()
@@ -80,6 +87,13 @@ namespace Jint.Tests.Runtime
 
             Assert.NotNull(engine.Evaluate("/[]/"));
             Assert.NotNull(engine.Evaluate("new RegExp('[]')"));
+        }
+
+        [Fact]
+        public void ShouldNotThrowErrorOnRegExNumericNegation()
+        {
+            var engine = new Engine();
+            Assert.True(ReferenceEquals(JsNumber.DoubleNaN, engine.Evaluate("-/[]/")));
         }
     }
 }

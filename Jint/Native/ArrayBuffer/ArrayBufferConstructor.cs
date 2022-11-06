@@ -65,13 +65,13 @@ namespace Jint.Native.ArrayBuffer
             return thisObject;
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             ExceptionHelper.ThrowTypeError(_realm, "Constructor ArrayBuffer requires 'new'");
             return Undefined;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
             if (newTarget.IsUndefined())
             {
@@ -87,7 +87,7 @@ namespace Jint.Native.ArrayBuffer
             var obj = OrdinaryCreateFromConstructor(
                 constructor,
                 static intrinsics => intrinsics.ArrayBuffer.PrototypeObject,
-                static (engine, realm, state) => new ArrayBufferInstance(engine, (ulong) ((JsNumber) state)._value),
+                static (engine, realm, state) => new ArrayBufferInstance(engine, (ulong) ((JsNumber) state!)._value),
                 JsNumber.Create(byteLength));
 
             return obj;

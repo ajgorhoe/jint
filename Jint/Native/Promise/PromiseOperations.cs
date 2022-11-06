@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using Jint.Native.Object;
 using Jint.Runtime;
 
@@ -29,20 +27,22 @@ namespace Jint.Native.Promise
         //      j. Else,
         //          i. Let status be Call(promiseCapability.[[Resolve]], undefined, « handlerResult.[[Value]] »).
         //      k. Return Completion(status).
-        internal static Action NewPromiseReactionJob(PromiseReaction reaction, JsValue value)
+        private static Action NewPromiseReactionJob(PromiseReaction reaction, JsValue value)
         {
             return () =>
             {
+                var promiseCapability = reaction.Capability;
+
                 if (reaction.Handler is ICallable handler)
                 {
                     try
                     {
                         var result = handler.Call(JsValue.Undefined, new[] {value});
-                        reaction.Capability.Resolve.Call(JsValue.Undefined, new[] {result});
+                        promiseCapability.Resolve.Call(JsValue.Undefined, new[] {result});
                     }
                     catch (JavaScriptException e)
                     {
-                        reaction.Capability.Reject.Call(JsValue.Undefined, new[] {e.Error});
+                        promiseCapability.Reject.Call(JsValue.Undefined, new[] {e.Error});
                     }
                 }
                 else
@@ -50,13 +50,13 @@ namespace Jint.Native.Promise
                     switch (reaction.Type)
                     {
                         case ReactionType.Fulfill:
-                            reaction.Capability.Resolve.Call(JsValue.Undefined, new[] {value});
+                            promiseCapability.Resolve.Call(JsValue.Undefined, new[] {value});
                             break;
 
                         case ReactionType.Reject:
-                            reaction.Capability.Reject.Call(JsValue.Undefined, new[] {value});
-
+                            promiseCapability.Reject.Call(JsValue.Undefined, new[] {value});
                             break;
+
                         default:
                             throw new ArgumentOutOfRangeException();
                     }
@@ -78,8 +78,7 @@ namespace Jint.Native.Promise
         //  d. Return Completion(thenCallResult).
         // .....Realm stuff....
         // 6. Return the Record { [[Job]]: job, [[Realm]]: thenRealm }.
-        internal static Action NewPromiseResolveThenableJob(PromiseInstance promise, ObjectInstance thenable,
-            ICallable thenMethod)
+        internal static Action NewPromiseResolveThenableJob(PromiseInstance promise, ObjectInstance thenable, ICallable thenMethod)
         {
             return () =>
             {
@@ -87,11 +86,11 @@ namespace Jint.Native.Promise
 
                 try
                 {
-                    thenMethod.Call(thenable, new[] {resolve as JsValue, reject});
+                    thenMethod.Call(thenable, new[] { resolve as JsValue, reject });
                 }
                 catch (JavaScriptException e)
                 {
-                    reject.Call(JsValue.Undefined, new[] {e.Error});
+                    reject.Call(JsValue.Undefined, new[] { e.Error });
                 }
             };
         }
@@ -143,10 +142,16 @@ namespace Jint.Native.Promise
                     break;
             }
 
-            // TODO do we actually need to track that? 
-            // it seems this is mostly for debugging purposes.
-            // E.g. to report unhandled promises to dev
-            // 12. Set promise.[[PromiseIsHandled]] to true.
+            //https://tc39.es/ecma262/#sec-performpromisethen
+            //...
+            //13. If resultCapability is undefined, then
+            //      a. Return undefined
+            //14. Else
+            //      a. Return resultCapability.[[Promise]]
+            if (resultCapability is null)
+            {
+                return JsValue.Undefined;
+            }
 
             return resultCapability.PromiseInstance;
         }

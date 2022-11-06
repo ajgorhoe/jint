@@ -1,4 +1,3 @@
-﻿using System;
 using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -16,7 +15,7 @@ namespace Jint.Native.Json
             Engine engine,
             Realm realm,
             ObjectPrototype objectPrototype)
-            : base(engine, objectClass: ObjectClass.JSON)
+            : base(engine)
         {
             _realm = realm;
             _prototype = objectPrototype;
@@ -27,8 +26,8 @@ namespace Jint.Native.Json
             var properties = new PropertyDictionary(2, checkExistingKeys: false)
             {
 #pragma warning disable 618
-                ["parse"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "parse", Parse, 2), true, false, true),
-                ["stringify"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "stringify", Stringify, 3), true, false, true)
+                ["parse"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "parse", Parse, 2, PropertyFlag.Configurable), true, false, true),
+                ["stringify"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "stringify", Stringify, 3, PropertyFlag.Configurable), true, false, true)
 #pragma warning restore 618
             };
             SetProperties(properties);

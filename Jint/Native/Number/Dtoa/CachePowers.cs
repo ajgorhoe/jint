@@ -1,4 +1,6 @@
-﻿// Copyright 2010 the V8 project authors. All rights reserved.
+#nullable disable
+
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -32,11 +34,11 @@ using System.Diagnostics;
 
 namespace Jint.Native.Number.Dtoa
 {
-    internal sealed class CachedPowers
+    internal static class CachedPowers
     {
         private const double Kd1Log210 = 0.30102999566398114; //  1 / lg(10)
 
-        private class CachedPower
+        private sealed class CachedPower
         {
             internal readonly ulong Significand;
             internal readonly short BinaryExponent;

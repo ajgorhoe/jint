@@ -1,4 +1,3 @@
-﻿using System;
 using Jint.Native;
 using Jint.Native.Function;
 
@@ -18,7 +17,7 @@ namespace Jint.Runtime.Interop
             _getter = getter;
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             return _getter(thisObject);
         }

@@ -23,13 +23,13 @@ namespace Jint.Runtime.Interpreter.Statements
                     System.Diagnostics.Debugger.Break();
                     break;
                 case DebuggerStatementHandling.Script:
-                    engine.DebugHandler?.OnBreak(_statement);
+                    engine.DebugHandler?.OnDebuggerStatement(_statement);
                     break;
                 case DebuggerStatementHandling.Ignore:
                     break;
             }
 
-            return new Completion(CompletionType.Normal, null, null, Location);
+            return new Completion(CompletionType.Normal, null!, _statement);
         }
     }
 }

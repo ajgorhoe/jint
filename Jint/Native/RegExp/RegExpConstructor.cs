@@ -1,4 +1,3 @@
-﻿using System;
 using System.Text.RegularExpressions;
 using Esprima;
 using Jint.Collections;
@@ -24,8 +23,8 @@ namespace Jint.Native.RegExp
         {
             _prototype = functionPrototype;
             PrototypeObject = new RegExpPrototype(engine, realm, this, objectPrototype);
-            _length = new PropertyDescriptor(2, PropertyFlag.AllForbidden);
-            _prototypeDescriptor= new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
+            _length = new PropertyDescriptor(2, PropertyFlag.Configurable);
+            _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
 
         protected override void Initialize()
@@ -37,7 +36,7 @@ namespace Jint.Native.RegExp
             SetSymbols(symbols);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             return Construct(arguments, thisObject);
         }
@@ -47,10 +46,12 @@ namespace Jint.Native.RegExp
             return Construct(arguments, this);
         }
 
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
+
         /// <summary>
         /// https://tc39.es/ecma262/#sec-regexp-pattern-flags
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
         {
             var pattern = arguments.At(0);
             var flags = arguments.At(1);
@@ -103,15 +104,16 @@ namespace Jint.Native.RegExp
 
             try
             {
-                var scanner = new Scanner("/" + p + "/" + flags , new ParserOptions { AdaptRegexp = true });
+                var options = new ScannerOptions();
+                var scanner = new Scanner("/" + p + "/" + flags, options);
 
                 // seems valid
-                r.Value = scanner.TestRegExp(p, f);
+                r.Value = scanner.ParseRegex(p, f, options.RegexTimeout);
 
                 var timeout = _engine.Options.Constraints.RegexTimeout;
                 if (timeout.Ticks > 0)
                 {
-                    r.Value = r.Value != null ? new Regex(r.Value.ToString(), r.Value.Options, timeout) : null;
+                    r.Value = new Regex(r.Value.ToString(), r.Value.Options, timeout);
                 }
             }
             catch (Exception ex)
@@ -132,22 +134,22 @@ namespace Jint.Native.RegExp
             var r = OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.RegExp.PrototypeObject,
-                static(engine, realm, _) => new RegExpInstance(engine));
+                static (Engine engine, Realm _, object? _) => new RegExpInstance(engine));
             return r;
         }
 
-        public RegExpInstance Construct(Regex regExp, string flags)
+        public RegExpInstance Construct(Regex regExp, string source, string flags)
         {
             var r = new RegExpInstance(Engine);
             r._prototype = PrototypeObject;
 
             r.Flags = flags;
-            r.Source = regExp?.ToString();
+            r.Source = source;
 
             var timeout = _engine.Options.Constraints.RegexTimeout;
             if (timeout.Ticks > 0)
             {
-                r.Value = regExp != null ? new Regex(regExp.ToString(), regExp.Options, timeout) : null;
+                r.Value = new Regex(regExp.ToString(), regExp.Options, timeout);
             }
             else
             {

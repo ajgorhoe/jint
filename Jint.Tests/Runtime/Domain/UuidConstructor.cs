@@ -1,4 +1,3 @@
-using System;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -55,7 +54,7 @@ namespace Jint.Tests.Runtime.Domain
             return obj;
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments) => Construct(arguments, null);
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments) => Construct(arguments, null);
 
         public void Configure()
         {

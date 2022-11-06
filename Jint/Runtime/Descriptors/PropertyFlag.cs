@@ -1,5 +1,3 @@
-﻿using System;
-
 namespace Jint.Runtime.Descriptors
 {
     [Flags]

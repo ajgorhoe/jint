@@ -1,4 +1,4 @@
-﻿using Jint.Collections;
+using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -20,9 +20,8 @@ namespace Jint.Native.Error
             Realm realm,
             ErrorConstructor constructor,
             ObjectInstance prototype,
-            JsString name,
-            ObjectClass objectClass)
-            : base(engine, objectClass)
+            JsString name)
+            : base(engine, ObjectClass.Object)
         {
             _realm = realm;
             _name = name;

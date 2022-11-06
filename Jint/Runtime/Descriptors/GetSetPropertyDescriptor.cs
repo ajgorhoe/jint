@@ -1,21 +1,20 @@
-﻿using Jint.Native;
-using Jint.Native.Function;
+using Jint.Native;
 
 namespace Jint.Runtime.Descriptors
 {
     public sealed class GetSetPropertyDescriptor : PropertyDescriptor
     {
-        private JsValue _get;
-        private JsValue _set;
+        private JsValue? _get;
+        private JsValue? _set;
 
-        public GetSetPropertyDescriptor(JsValue get, JsValue set, bool? enumerable = null, bool? configurable = null)
+        public GetSetPropertyDescriptor(JsValue? get, JsValue? set, bool? enumerable = null, bool? configurable = null)
         : base(null, writable: null, enumerable: enumerable, configurable: configurable)
         {
             _get = get;
             _set = set;
         }
 
-        internal GetSetPropertyDescriptor(JsValue get, JsValue set, PropertyFlag flags)
+        internal GetSetPropertyDescriptor(JsValue? get, JsValue? set, PropertyFlag flags)
             : base(null, flags)
         {
             _get = get;
@@ -28,8 +27,8 @@ namespace Jint.Runtime.Descriptors
             _set = descriptor.Set;
         }
 
-        public override JsValue Get => _get;
-        public override JsValue Set => _set;
+        public override JsValue? Get => _get;
+        public override JsValue? Set => _set;
 
         internal void SetGet(JsValue getter)
         {
@@ -44,20 +43,17 @@ namespace Jint.Runtime.Descriptors
         internal sealed class ThrowerPropertyDescriptor : PropertyDescriptor
         {
             private readonly Engine _engine;
-            private readonly string _message;
-            private JsValue _thrower;
+            private JsValue? _thrower;
 
-            public ThrowerPropertyDescriptor(Engine engine, PropertyFlag flags, string message)
-                : base(flags)
+            public ThrowerPropertyDescriptor(Engine engine, PropertyFlag flags) : base(flags)
             {
                 _engine = engine;
-                _message = message;
             }
 
-            public override JsValue Get => _thrower ??= new ThrowTypeError(_engine, _engine.Realm, _message) { _prototype = _engine.Realm.Intrinsics.Function.PrototypeObject};
-            public override JsValue Set => _thrower ??= new ThrowTypeError(_engine, _engine.Realm, _message) { _prototype = _engine.Realm.Intrinsics.Function.PrototypeObject};
+            public override JsValue Get => _thrower ??= _engine.Realm.Intrinsics.ThrowTypeError;
+            public override JsValue Set => _thrower ??= _engine.Realm.Intrinsics.ThrowTypeError;
 
-            protected internal override JsValue CustomValue
+            protected internal override JsValue? CustomValue
             {
                 set => ExceptionHelper.ThrowInvalidOperationException("making changes to throw type error property's descriptor is not allowed");
             }

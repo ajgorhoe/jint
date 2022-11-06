@@ -1,4 +1,3 @@
-using System;
 using Jint.Native.Object;
 using Jint.Native.TypedArray;
 using Jint.Runtime;
@@ -13,7 +12,7 @@ namespace Jint.Native.ArrayBuffer
         // so that we don't need to allocate while or reading setting values
         private readonly byte[] _workBuffer = new byte[8];
 
-        private byte[] _arrayBufferData;
+        private byte[]? _arrayBufferData;
         private readonly JsValue _arrayBufferDetachKey = Undefined;
 
         internal ArrayBufferInstance(
@@ -34,8 +33,8 @@ namespace Jint.Native.ArrayBuffer
             return new byte[byteLength];
         }
 
-        internal int ArrayBufferByteLength => _arrayBufferData.Length;
-        internal byte[] ArrayBufferData => _arrayBufferData;
+        internal int ArrayBufferByteLength => _arrayBufferData?.Length ?? 0;
+        internal byte[]? ArrayBufferData => _arrayBufferData;
 
         internal bool IsDetachedBuffer => _arrayBufferData is null;
         internal bool IsSharedArrayBuffer => false; // TODO SharedArrayBuffer
@@ -43,7 +42,7 @@ namespace Jint.Native.ArrayBuffer
         /// <summary>
         /// https://tc39.es/ecma262/#sec-detacharraybuffer
         /// </summary>
-        internal void DetachArrayBuffer(JsValue key = null)
+        internal void DetachArrayBuffer(JsValue? key = null)
         {
             key ??= Undefined;
 
@@ -61,10 +60,9 @@ namespace Jint.Native.ArrayBuffer
         internal ArrayBufferInstance CloneArrayBuffer(
             ArrayBufferConstructor constructor,
             int srcByteOffset,
-            uint srcLength,
-            JsValue cloneConstructor)
+            uint srcLength)
         {
-            var targetBuffer = constructor.AllocateArrayBuffer(cloneConstructor, srcLength);
+            var targetBuffer = constructor.AllocateArrayBuffer(_engine.Realm.Intrinsics.ArrayBuffer, srcLength);
             AssertNotDetached();
             var srcBlock = _arrayBufferData;
             var targetBlock = targetBuffer.ArrayBufferData;
@@ -80,7 +78,7 @@ namespace Jint.Native.ArrayBuffer
         /// <summary>
         /// https://tc39.es/ecma262/#sec-getvaluefrombuffer
         /// </summary>
-        internal double GetValueFromBuffer(
+        internal TypedArrayValue GetValueFromBuffer(
             int byteIndex,
             TypedArrayElementType type,
             bool isTypedArray,
@@ -104,19 +102,22 @@ namespace Jint.Native.ArrayBuffer
                 h. Append Chosen Value EsprimaExtensions.Record { [[Event]]: readEvent, [[ChosenValue]]: rawValue } to execution.[[ChosenValues]].
             */
             ExceptionHelper.ThrowNotImplementedException("SharedArrayBuffer not implemented");
-            return 0;
+            return default;
         }
 
         /// <summary>
         /// https://tc39.es/ecma262/#sec-rawbytestonumeric
         /// </summary>
-        internal double RawBytesToNumeric(TypedArrayElementType type, int byteIndex, bool isLittleEndian)
+        internal TypedArrayValue RawBytesToNumeric(TypedArrayElementType type, int byteIndex, bool isLittleEndian)
         {
             var elementSize = type.GetElementSize();
-            var rawBytes = _arrayBufferData;
+            var rawBytes = _arrayBufferData!;
 
-            // floats require a little more at the moment
-            var needsReverse = !isLittleEndian && elementSize > 1 && (type == TypedArrayElementType.Float32 || type == TypedArrayElementType.Float64);
+            // 8 byte values require a little more at the moment
+            var needsReverse = !isLittleEndian
+                               && elementSize > 1
+                               && type is TypedArrayElementType.Float32 or TypedArrayElementType.Float64 or TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64;
+
             if (needsReverse)
             {
                 System.Array.Copy(rawBytes, byteIndex, _workBuffer, 0, elementSize);
@@ -146,13 +147,19 @@ namespace Jint.Native.ArrayBuffer
                 return value;
             }
 
-            if (type.IsBigIntElementType())
+            if (type == TypedArrayElementType.BigUint64)
             {
-                // return the BigInt value that corresponds to intValue
-                ExceptionHelper.ThrowNotImplementedException("BigInt not implemented");
+                var value = BitConverter.ToUInt64(rawBytes, byteIndex);
+                return value;
             }
 
-            long? intValue = type switch
+            if (type == TypedArrayElementType.BigInt64)
+            {
+                var value = BitConverter.ToInt64(rawBytes, byteIndex);
+                return value;
+            }
+
+            TypedArrayValue? arrayValue = type switch
             {
                 TypedArrayElementType.Int8 => ((sbyte) rawBytes[byteIndex]),
                 TypedArrayElementType.Uint8 => (rawBytes[byteIndex]),
@@ -176,12 +183,12 @@ namespace Jint.Native.ArrayBuffer
                 _ => null
             };
 
-            if (intValue is null)
+            if (arrayValue is null)
             {
                 ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(type), type.ToString());
             }
 
-            return (double) intValue;
+            return arrayValue.Value;
         }
 
         /// <summary>
@@ -190,7 +197,7 @@ namespace Jint.Native.ArrayBuffer
         internal void SetValueInBuffer(
             int byteIndex,
             TypedArrayElementType type,
-            double value,
+            TypedArrayValue value,
             bool isTypedArray,
             ArrayBufferOrder order,
             bool? isLittleEndian = null)
@@ -214,23 +221,35 @@ namespace Jint.Native.ArrayBuffer
             }
         }
 
-        private byte[] NumericToRawBytes(TypedArrayElementType type, double value, bool isLittleEndian)
+        private byte[] NumericToRawBytes(TypedArrayElementType type, TypedArrayValue value, bool isLittleEndian)
         {
             byte[] rawBytes;
             if (type == TypedArrayElementType.Float32)
             {
                 // Let rawBytes be a List whose elements are the 4 bytes that are the result of converting value to IEEE 754-2019 binary32 format using roundTiesToEven mode. If isLittleEndian is false, the bytes are arranged in big endian order. Otherwise, the bytes are arranged in little endian order. If value is NaN, rawBytes may be set to any implementation chosen IEEE 754-2019 binary32 format Not-a-Number encoding. An implementation must always choose the same encoding for each implementation distinguishable NaN value.
-                rawBytes = BitConverter.GetBytes((float) value);
+                rawBytes = BitConverter.GetBytes((float) value.DoubleValue);
             }
             else if (type == TypedArrayElementType.Float64)
             {
                 // Let rawBytes be a List whose elements are the 8 bytes that are the IEEE 754-2019 binary64 format encoding of value. If isLittleEndian is false, the bytes are arranged in big endian order. Otherwise, the bytes are arranged in little endian order. If value is NaN, rawBytes may be set to any implementation chosen IEEE 754-2019 binary64 format Not-a-Number encoding. An implementation must always choose the same encoding for each implementation distinguishable NaN value.
-                rawBytes = BitConverter.GetBytes(value);
+                rawBytes = BitConverter.GetBytes(value.DoubleValue);
+            }
+            else if (type == TypedArrayElementType.BigInt64)
+            {
+                rawBytes = BitConverter.GetBytes(TypeConverter.ToBigInt64(value.BigInteger));
+            }
+            else if (type == TypedArrayElementType.BigUint64)
+            {
+                rawBytes = BitConverter.GetBytes(TypeConverter.ToBigUint64(value.BigInteger));
             }
             else
             {
                 // inlined conversion for faster speed instead of getting the method in spec
-                var intValue = (long) value;
+                var doubleValue  = value.DoubleValue;
+                var intValue = double.IsNaN(doubleValue) || doubleValue == 0 || double.IsInfinity(doubleValue)
+                    ? 0
+                    : (long) doubleValue;
+
                 rawBytes = _workBuffer;
                 switch (type)
                 {
@@ -241,7 +260,7 @@ namespace Jint.Native.ArrayBuffer
                         rawBytes[0] = (byte) intValue;
                         break;
                     case TypedArrayElementType.Uint8C:
-                        rawBytes[0] = (byte) TypeConverter.ToUint8Clamp(value);
+                        rawBytes[0] = (byte) TypeConverter.ToUint8Clamp(value.DoubleValue);
                         break;
                     case TypedArrayElementType.Int16:
 #if !NETSTANDARD2_1
@@ -259,9 +278,9 @@ namespace Jint.Native.ArrayBuffer
                         break;
                     case TypedArrayElementType.Int32:
 #if !NETSTANDARD2_1
-                        rawBytes = BitConverter.GetBytes((int) intValue);
+                        rawBytes = BitConverter.GetBytes((uint) intValue);
 #else
-                        BitConverter.TryWriteBytes(rawBytes, (int) intValue);
+                        BitConverter.TryWriteBytes(rawBytes, (uint) intValue);
 #endif
                         break;
                     case TypedArrayElementType.Uint32:

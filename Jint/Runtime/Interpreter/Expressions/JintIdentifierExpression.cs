@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Argument;
@@ -7,41 +9,37 @@ namespace Jint.Runtime.Interpreter.Expressions
 {
     internal sealed class JintIdentifierExpression : JintExpression
     {
-        internal readonly EnvironmentRecord.BindingName _expressionName;
-        private readonly JsValue _calculatedValue;
-
         public JintIdentifierExpression(Identifier expression) : base(expression)
         {
-            _expressionName = new EnvironmentRecord.BindingName(expression.Name);
-            if (expression.Name == "undefined")
-            {
-                _calculatedValue = JsValue.Undefined;
-            }
         }
 
-        public bool HasEvalOrArguments
-            => _expressionName.Key == KnownKeys.Eval || _expressionName.Key == KnownKeys.Arguments;
+        internal EnvironmentRecord.BindingName Identifier
+        {
+            get => (EnvironmentRecord.BindingName) (_expression.AssociatedData ??= new EnvironmentRecord.BindingName(((Identifier) _expression).Name));
+        }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        public bool HasEvalOrArguments => Identifier.HasEvalOrArguments;
+
+        protected override object EvaluateInternal(EvaluationContext context)
         {
             var engine = context.Engine;
             var env = engine.ExecutionContext.LexicalEnvironment;
             var strict = StrictModeScope.IsStrictModeCode;
-            var identifierEnvironment = JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(engine, env, _expressionName, strict, out var temp, out _)
+            var identifierEnvironment = JintEnvironment.TryGetIdentifierEnvironmentWithBinding(env, Identifier, out var temp)
                 ? temp
                 : JsValue.Undefined;
 
-            return NormalCompletion(engine._referencePool.Rent(identifierEnvironment, _expressionName.StringValue, strict, thisValue: null));
+            return engine._referencePool.Rent(identifierEnvironment, Identifier.StringValue, strict, thisValue: null);
         }
 
-        public override Completion GetValue(EvaluationContext context)
+        public override JsValue GetValue(EvaluationContext context)
         {
             // need to notify correct node when taking shortcut
-            context.LastSyntaxNode = _expression;
+            context.LastSyntaxElement = _expression;
 
-            if (_calculatedValue is not null)
+            if (Identifier.CalculatedValue is not null)
             {
-                return Completion.Normal(_calculatedValue, _expression.Location);
+                return Identifier.CalculatedValue;
             }
 
             var strict = StrictModeScope.IsStrictModeCode;
@@ -49,21 +47,20 @@ namespace Jint.Runtime.Interpreter.Expressions
             var env = engine.ExecutionContext.LexicalEnvironment;
 
             if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
-                engine,
                 env,
-                _expressionName,
+                Identifier,
                 strict,
                 out _,
                 out var value))
             {
                 if (value is null)
                 {
-                    ExceptionHelper.ThrowReferenceError(engine.Realm, _expressionName.Key.Name + " has not been initialized");
+                    ThrowNotInitialized(engine);
                 }
             }
             else
             {
-                var reference = engine._referencePool.Rent(JsValue.Undefined, _expressionName.StringValue, strict, thisValue: null);
+                var reference = engine._referencePool.Rent(JsValue.Undefined, Identifier.StringValue, strict, thisValue: null);
                 value = engine.GetValue(reference, true);
             }
 
@@ -73,7 +70,14 @@ namespace Jint.Runtime.Interpreter.Expressions
                 argumentsInstance.Materialize();
             }
 
-            return Completion.Normal(value, _expression.Location);
+            return value;
+        }
+
+        [DoesNotReturn]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ThrowNotInitialized(Engine engine)
+        {
+            ExceptionHelper.ThrowReferenceError(engine.Realm, Identifier.Key.Name + " has not been initialized");
         }
     }
 }

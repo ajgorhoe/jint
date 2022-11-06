@@ -1,4 +1,4 @@
-﻿using Jint.Collections;
+using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -27,6 +27,8 @@ namespace Jint.Native.Symbol
             _length = new PropertyDescriptor(JsNumber.PositiveZero, PropertyFlag.Configurable);
             _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
+
+        public SymbolPrototype PrototypeObject { get; }
 
         protected override void Initialize()
         {
@@ -57,7 +59,7 @@ namespace Jint.Native.Symbol
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/6.0/index.html#sec-symbol-description
         /// </summary>
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             var description = arguments.At(0);
             var descString = description.IsUndefined()
@@ -68,7 +70,10 @@ namespace Jint.Native.Symbol
             return value;
         }
 
-        public JsValue For(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-symbol.for
+        /// </summary>
+        private JsValue For(JsValue thisObj, JsValue[] arguments)
         {
             var stringKey = TypeConverter.ToJsString(arguments.At(0));
 
@@ -83,7 +88,10 @@ namespace Jint.Native.Symbol
             return symbol;
         }
 
-        public JsValue KeyFor(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-symbol.keyfor
+        /// </summary>
+        private JsValue KeyFor(JsValue thisObj, JsValue[] arguments)
         {
             var symbol = arguments.At(0) as JsSymbol;
             if (symbol is null)
@@ -99,23 +107,15 @@ namespace Jint.Native.Symbol
             return Undefined;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            ExceptionHelper.ThrowTypeError(_realm, "Symbol is not a constructor");
             return null;
         }
 
         public SymbolInstance Construct(JsSymbol symbol)
         {
-            var instance = new SymbolInstance(Engine)
-            {
-                _prototype = PrototypeObject,
-                SymbolData = symbol
-            };
-
-            return instance;
+            return new SymbolInstance(Engine, PrototypeObject, symbol);
         }
-
-        public SymbolPrototype PrototypeObject { get; private set; }
     }
 }

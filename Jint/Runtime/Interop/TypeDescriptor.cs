@@ -1,7 +1,6 @@
-using System;
 using System.Collections;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
 namespace Jint.Runtime.Interop
@@ -12,8 +11,10 @@ namespace Jint.Runtime.Interop
         private static readonly Type _genericDictionaryType = typeof(IDictionary<,>);
         private static readonly Type _stringType = typeof(string);
 
-        private readonly PropertyInfo _stringIndexer;
-        private readonly PropertyInfo _keysAccessor;
+        private readonly MethodInfo? _tryGetValueMethod;
+        private readonly MethodInfo? _removeMethod;
+        private readonly PropertyInfo? _keysAccessor;
+        private readonly Type? _valueType;
 
         private TypeDescriptor(Type type)
         {
@@ -24,13 +25,15 @@ namespace Jint.Runtime.Interop
                     && i.GetGenericTypeDefinition() == _genericDictionaryType
                     && i.GenericTypeArguments[0] == _stringType)
                 {
-                    _stringIndexer = i.GetProperty("Item");
+                    _tryGetValueMethod = i.GetMethod("TryGetValue");
+                    _removeMethod = i.GetMethod("Remove");
                     _keysAccessor = i.GetProperty("Keys");
+                    _valueType = i.GenericTypeArguments[1];
                     break;
                 }
             }
 
-            IsDictionary = _stringIndexer is not null || typeof(IDictionary).IsAssignableFrom(type);
+            IsDictionary = _tryGetValueMethod is not null || typeof(IDictionary).IsAssignableFrom(type);
 
             // dictionaries are considered normal-object-like
             IsArrayLike = !IsDictionary && DetermineIfObjectIsArrayLikeClrCollection(type);
@@ -47,9 +50,9 @@ namespace Jint.Runtime.Interop
         public bool IsArrayLike { get; }
         public bool IsIntegerIndexedArray { get; }
         public bool IsDictionary { get; }
-        public bool IsStringKeyedGenericDictionary => _stringIndexer is not null;
+        public bool IsStringKeyedGenericDictionary => _tryGetValueMethod is not null;
         public bool IsEnumerable { get; }
-        public PropertyInfo LengthProperty { get; }
+        public PropertyInfo? LengthProperty { get; }
 
         public bool Iterable => IsArrayLike || IsDictionary || IsEnumerable;
 
@@ -82,7 +85,7 @@ namespace Jint.Runtime.Interop
             return false;
         }
 
-        public bool TryGetValue(object target, string member, out object o)
+        public bool TryGetValue(object target, string member, [NotNullWhen(true)] out object? o)
         {
             if (!IsStringKeyedGenericDictionary)
             {
@@ -92,14 +95,26 @@ namespace Jint.Runtime.Interop
             // we could throw when indexing with an invalid key
             try
             {
-                o = _stringIndexer.GetValue(target, new [] { member });
-                return true;
+                var parameters = new[] { member, _valueType!.IsValueType ? Activator.CreateInstance(_valueType) : null };
+                var result = (bool) _tryGetValueMethod!.Invoke(target, parameters);
+                o = parameters[1];
+                return result;
             }
             catch (TargetInvocationException tie) when (tie.InnerException is KeyNotFoundException)
             {
                 o = null;
                 return false;
             }
+        }
+
+        public bool Remove(object target, string key)
+        {
+            if (_removeMethod is null)
+            {
+                return false;
+            }
+
+            return (bool) _removeMethod.Invoke(target , new object[] { key });
         }
 
         public ICollection<string> GetKeys(object target)
@@ -109,7 +124,7 @@ namespace Jint.Runtime.Interop
                 ExceptionHelper.ThrowInvalidOperationException("Not a string-keyed dictionary");
             }
 
-            return (ICollection<string>)_keysAccessor.GetValue(target);
+            return (ICollection<string>) _keysAccessor!.GetValue(target);
         }
     }
 }

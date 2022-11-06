@@ -1,4 +1,3 @@
-using System;
 using Esprima.Ast;
 using Jint.Extensions;
 using Jint.Native;
@@ -6,6 +5,8 @@ using Jint.Runtime.Environments;
 using Jint.Runtime.Interop;
 using Jint.Runtime.References;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Numerics;
 using System.Reflection;
 
 namespace Jint.Runtime.Interpreter.Expressions
@@ -13,44 +14,50 @@ namespace Jint.Runtime.Interpreter.Expressions
     internal sealed class JintUnaryExpression : JintExpression
     {
         private readonly record struct OperatorKey(string OperatorName, Type Operand);
-        private static readonly ConcurrentDictionary<OperatorKey, MethodDescriptor> _knownOperators = new();
+        private static readonly ConcurrentDictionary<OperatorKey, MethodDescriptor?> _knownOperators = new();
 
         private readonly JintExpression _argument;
         private readonly UnaryOperator _operator;
 
-        private JintUnaryExpression(Engine engine, UnaryExpression expression) : base(expression)
+        private JintUnaryExpression(UnaryExpression expression) : base(expression)
         {
-            _argument = Build(engine, expression.Argument);
+            _argument = Build(expression.Argument);
             _operator = expression.Operator;
         }
 
-        internal static JintExpression Build(Engine engine, UnaryExpression expression)
+        internal static JintExpression Build(UnaryExpression expression)
         {
+            if (expression.AssociatedData is JsValue cached)
+            {
+                return new JintConstantExpression(expression, cached);
+            }
+
             if (expression.Operator == UnaryOperator.Minus
                 && expression.Argument is Literal literal)
             {
                 var value = JintLiteralExpression.ConvertToJsValue(literal);
-                if (!(value is null))
+                if (value is not null)
                 {
                     // valid for caching
-                    return new JintConstantExpression(expression, EvaluateMinus(value));
+                    var evaluatedValue = EvaluateMinus(value);
+                    expression.AssociatedData = evaluatedValue;
+                    return new JintConstantExpression(expression, evaluatedValue);
                 }
             }
 
-            return new JintUnaryExpression(engine, expression);
+            return new JintUnaryExpression(expression);
         }
 
-        public override Completion GetValue(EvaluationContext context)
+        public override JsValue GetValue(EvaluationContext context)
         {
             // need to notify correct node when taking shortcut
-            context.LastSyntaxNode = _expression;
-
-            return Completion.Normal(EvaluateJsValue(context), _expression.Location);
+            context.LastSyntaxElement = _expression;
+            return EvaluateJsValue(context);
         }
 
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            return NormalCompletion(EvaluateJsValue(context));
+            return EvaluateJsValue(context);
         }
 
         private JsValue EvaluateJsValue(EvaluationContext context)
@@ -60,20 +67,18 @@ namespace Jint.Runtime.Interpreter.Expressions
             {
                 case UnaryOperator.Plus:
                 {
-                    var v = _argument.GetValue(context).Value;
+                    var v = _argument.GetValue(context);
                     if (context.OperatorOverloadingAllowed &&
                         TryOperatorOverloading(context, v, "op_UnaryPlus", out var result))
                     {
                         return result;
                     }
 
-                    return v.IsInteger() && v.AsInteger() != 0
-                        ? v
-                        : JsNumber.Create(TypeConverter.ToNumber(v));
+                    return TypeConverter.ToNumber(v);
                 }
                 case UnaryOperator.Minus:
                 {
-                    var v = _argument.GetValue(context).Value;
+                    var v = _argument.GetValue(context);
                     if (context.OperatorOverloadingAllowed &&
                         TryOperatorOverloading(context, v, "op_UnaryNegation", out var result))
                     {
@@ -84,18 +89,24 @@ namespace Jint.Runtime.Interpreter.Expressions
                 }
                 case UnaryOperator.BitwiseNot:
                 {
-                    var v = _argument.GetValue(context).Value;
+                    var v = _argument.GetValue(context);
                     if (context.OperatorOverloadingAllowed &&
                         TryOperatorOverloading(context, v, "op_OnesComplement", out var result))
                     {
                         return result;
                     }
 
-                    return JsNumber.Create(~TypeConverter.ToInt32(v));
+                    var value = TypeConverter.ToNumeric(v);
+                    if (value.IsNumber())
+                    {
+                        return JsNumber.Create(~TypeConverter.ToInt32(value));
+                    }
+
+                    return JsBigInt.Create(~value.AsBigInt());
                 }
                 case UnaryOperator.LogicalNot:
                 {
-                    var v = _argument.GetValue(context).Value;
+                    var v = _argument.GetValue(context);
                     if (context.OperatorOverloadingAllowed &&
                         TryOperatorOverloading(context, v, "op_LogicalNot", out var result))
                     {
@@ -106,8 +117,8 @@ namespace Jint.Runtime.Interpreter.Expressions
                 }
 
                 case UnaryOperator.Delete:
-                    var r = _argument.Evaluate(context).Value as Reference;
-                    if (r == null)
+                    // https://262.ecma-international.org/5.1/#sec-11.4.1
+                    if (_argument.Evaluate(context) is not Reference r)
                     {
                         return JsBoolean.True;
                     }
@@ -116,13 +127,14 @@ namespace Jint.Runtime.Interpreter.Expressions
                     {
                         if (r.IsStrictReference())
                         {
-                            ExceptionHelper.ThrowSyntaxError(engine.Realm);
+                            ExceptionHelper.ThrowSyntaxError(engine.Realm, "Delete of an unqualified identifier in strict mode.");
                         }
 
                         engine._referencePool.Return(r);
                         return JsBoolean.True;
                     }
 
+                    var referencedName = r.GetReferencedName();
                     if (r.IsPropertyReference())
                     {
                         if (r.IsSuperReference())
@@ -131,10 +143,18 @@ namespace Jint.Runtime.Interpreter.Expressions
                         }
 
                         var o = TypeConverter.ToObject(engine.Realm, r.GetBase());
-                        var deleteStatus = o.Delete(r.GetReferencedName());
-                        if (!deleteStatus && r.IsStrictReference())
+                        var deleteStatus = o.Delete(referencedName);
+                        if (!deleteStatus)
                         {
-                            ExceptionHelper.ThrowTypeError(engine.Realm);
+                            if (r.IsStrictReference())
+                            {
+                                ExceptionHelper.ThrowTypeError(engine.Realm, $"Cannot delete property '{referencedName}' of {o}");
+                            }
+
+                            if (StrictModeScope.IsStrictModeCode && !r.GetBase().AsObject().GetProperty(referencedName).Configurable)
+                            {
+                                ExceptionHelper.ThrowTypeError(engine.Realm, $"Cannot delete property '{referencedName}' of {o}");
+                            }
                         }
 
                         engine._referencePool.Return(r);
@@ -146,8 +166,8 @@ namespace Jint.Runtime.Interpreter.Expressions
                         ExceptionHelper.ThrowSyntaxError(engine.Realm);
                     }
 
-                    var bindings = r.GetBase().TryCast<EnvironmentRecord>();
-                    var property = r.GetReferencedName();
+                    var bindings = (EnvironmentRecord) r.GetBase();
+                    var property = referencedName;
                     engine._referencePool.Return(r);
 
                     return bindings.DeleteBinding(property.ToString()) ? JsBoolean.True : JsBoolean.False;
@@ -161,7 +181,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                     var result = _argument.Evaluate(context);
                     JsValue v;
 
-                    if (result.Value is Reference rf)
+                    if (result is Reference rf)
                     {
                         if (rf.IsUnresolvableReference())
                         {
@@ -173,7 +193,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                     }
                     else
                     {
-                        v = (JsValue) result.Value;
+                        v = (JsValue) result;
                     }
 
                     if (v.IsUndefined())
@@ -190,6 +210,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                     {
                         case Types.Boolean: return JsString.BooleanString;
                         case Types.Number: return JsString.NumberString;
+                        case Types.BigInt: return JsString.BigIntString;
                         case Types.String: return JsString.StringString;
                         case Types.Symbol: return JsString.SymbolString;
                     }
@@ -207,23 +228,29 @@ namespace Jint.Runtime.Interpreter.Expressions
             }
         }
 
-        private static JsNumber EvaluateMinus(JsValue value)
+        private static JsValue EvaluateMinus(JsValue value)
         {
-            var minusValue = value;
-            if (minusValue.IsInteger())
+            if (value.IsInteger())
             {
-                var asInteger = minusValue.AsInteger();
+                var asInteger = value.AsInteger();
                 if (asInteger != 0)
                 {
                     return JsNumber.Create(asInteger * -1);
                 }
             }
 
-            var n = TypeConverter.ToNumber(minusValue);
-            return JsNumber.Create(double.IsNaN(n) ? double.NaN : n * -1);
+            value = TypeConverter.ToNumeric(value);
+            if (value.IsNumber())
+            {
+                var n = ((JsNumber) value)._value;
+                return double.IsNaN(n) ? JsNumber.DoubleNaN : JsNumber.Create(n * -1);
+            }
+
+            var bigInt = value.AsBigInt();
+            return JsBigInt.Create(BigInteger.Negate(bigInt));
         }
 
-        internal static bool TryOperatorOverloading(EvaluationContext context, JsValue value, string clrName, out JsValue result)
+        internal static bool TryOperatorOverloading(EvaluationContext context, JsValue value, string clrName, [NotNullWhen(true)] out JsValue? result)
         {
             var operand = value.ToObject();
 
@@ -235,7 +262,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                 var key = new OperatorKey(clrName, operandType);
                 var method = _knownOperators.GetOrAdd(key, _ =>
                 {
-                    MethodInfo foundMethod = null;
+                    MethodInfo? foundMethod = null;
                     foreach (var x in operandType.GetOperatorOverloadMethods())
                     {
                         if (x.Name == clrName && x.GetParameters().Length == 1)

@@ -1,4 +1,3 @@
-﻿using System;
 using System.Runtime.CompilerServices;
 using Jint.Runtime;
 
@@ -25,18 +24,21 @@ namespace Jint.Native
             return _value;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-symboldescriptivestring
+        /// </summary>
         public override string ToString()
         {
             var value = _value.IsUndefined() ? "" : _value.AsString();
             return "Symbol(" + value + ")";
         }
 
-        public override bool Equals(JsValue obj)
+        public override bool Equals(JsValue? obj)
         {
             return Equals(obj as JsSymbol);
         }
 
-        public bool Equals(JsSymbol other)
+        public bool Equals(JsSymbol? other)
         {
             return ReferenceEquals(this, other);
         }

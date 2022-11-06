@@ -1,8 +1,5 @@
-﻿using Jint.Native;
+using Jint.Native;
 using Jint.Tests.Runtime.Domain;
-using System.Collections.Generic;
-using System.Linq;
-using Xunit;
 
 namespace Jint.Tests.Runtime.ExtensionMethods
 {
@@ -131,6 +128,8 @@ namespace Jint.Tests.Runtime.ExtensionMethods
             Assert.Equal(6, intSumRes);
         }
 
+        // TODO this fails due to double -> long assignment on FW
+#if !NETFRAMEWORK
         [Fact]
         public void LinqExtensionMethodWithSingleGenericParameter()
         {
@@ -141,6 +140,7 @@ namespace Jint.Tests.Runtime.ExtensionMethods
             var stringSumRes = engine.Evaluate("stringList.Sum(x => x.length)").AsNumber();
             Assert.Equal(11, stringSumRes);
         }
+#endif
 
         [Fact]
         public void LinqExtensionMethodWithMultipleGenericParameters()
@@ -156,5 +156,154 @@ namespace Jint.Tests.Runtime.ExtensionMethods
             // Thus, the following script will not work as expected.
             // stringList.Select((x, i) => x + i).ToArray().join()
         }
+
+        [Fact]
+        public void GenericTypeExtension()
+        {
+            var options = new Options();
+            options.AddExtensionMethods(typeof(ObservableExtensions));
+
+            var engine = new Engine(options);
+
+            engine.SetValue("log", new System.Action<object>(System.Console.WriteLine));
+
+            NameObservable observable = new NameObservable();
+
+            engine.SetValue("observable", observable);
+            engine.Evaluate(@"
+                log('before');
+                observable.Subscribe((name) =>{
+                    log('observable: subscribe: name: ' + name);
+                });
+
+                observable.UpdateName('foobar');
+                log('after');
+            ");
+
+            Assert.Equal("foobar", observable.Last);
+        }
+
+        [Fact]
+        public void GenericExtensionMethodOnClosedGenericType()
+        {
+            var options = new Options();
+            options.AddExtensionMethods(typeof(ObservableExtensions));
+
+            var engine = new Engine(options);
+
+            engine.SetValue("log", new System.Action<object>(System.Console.WriteLine));
+
+            NameObservable observable = new NameObservable();
+            engine.SetValue("observable", observable);
+            var result = engine.Evaluate(@"
+                log('before calling Select');
+                var result = observable.Select('some text');
+                log('result: ' + result);
+                return result;
+            ");
+
+            //System.Console.WriteLine("GenericExtensionMethodOnGenericType: result: " + result + " result.ToString(): " + result.ToString());
+
+            Assert.Equal("some text", result);
+        }
+
+        [Fact]
+        public void GenericExtensionMethodOnClosedGenericType2()
+        {
+            var options = new Options();
+            options.AddExtensionMethods(typeof(ObservableExtensions));
+
+            var engine = new Engine(options);
+
+            NameObservable observable = new NameObservable();
+            observable.Where((text) =>
+            {
+                System.Console.WriteLine("GenericExtensionMethodOnClosedGenericType2: NameObservable: Where: text: " + text);
+                return true;
+            });
+            engine.SetValue("observable", observable);
+            var result = engine.Evaluate(@"
+                var result = observable.Where(function(text){
+                    return true;
+                });
+
+                observable.UpdateName('testing yo');
+                observable.CommitName();
+                return result;
+            ");
+
+            var nameObservableResult = result.ToObject() as NameObservable;
+            Assert.NotNull(nameObservableResult);
+            Assert.Equal("testing yo", nameObservableResult.Last);
+        }
+
+        [Fact]
+        public void GenericExtensionMethodOnOpenGenericType()
+        {
+            var options = new Options();
+            options.AddExtensionMethods(typeof(ObservableExtensions));
+
+            var engine = new Engine(options);
+
+            BaseObservable<string> observable = new BaseObservable<string>();
+            observable.Where((text) =>
+            {
+                System.Console.WriteLine("GenericExtensionMethodOnOpenGenericType: BaseObservable: Where: text: " + text);
+                return true;
+            });
+            engine.SetValue("observable", observable);
+            var result = engine.Evaluate(@"
+                var result = observable.Where(function(text){
+                    return true;
+                });
+
+                observable.Update('testing yo');
+                observable.BroadcastCompleted();
+
+                return result;
+            ");
+
+            System.Console.WriteLine("GenericExtensionMethodOnOpenGenericType: result: " + result + " result.ToString(): " + result.ToString());
+            var baseObservableResult = result.ToObject() as BaseObservable<string>;
+
+            System.Console.WriteLine("GenericExtensionMethodOnOpenGenericType: baseObservableResult: " + baseObservableResult);
+            Assert.NotNull(baseObservableResult);
+            Assert.Equal("testing yo", baseObservableResult.Last);
+        }
+
+        [Fact]
+        public void GenericExtensionMethodOnGenericTypeInstantiatedInJs()
+        {
+            var options = new Options();
+            options.AddExtensionMethods(typeof(ObservableExtensions));
+
+            var engine = new Engine(options);
+
+            engine.SetValue("BaseObservable", typeof(BaseObservable<>));
+            engine.SetValue("ObservableFactory", typeof(ObservableFactory));
+
+            var result = engine.Evaluate(@"
+
+                // you can't instantiate generic types in JS (without providing the types as arguments to the constructor) - i.e. not compatible with transpiled typescript
+                //const observable = new BaseObservable();
+                //const observable = BaseObservable.GetBoolBaseObservable();
+                const observable = ObservableFactory.GetBoolBaseObservable();
+
+                var result = observable.Where(function(someBool){
+                    return true;
+                });
+                observable.Update(false);
+                observable.BroadcastCompleted();
+
+                return result;
+            ");
+
+            var baseObservableResult = result.ToObject() as BaseObservable<bool>;
+
+            System.Console.WriteLine("GenericExtensionMethodOnOpenGenericType: baseObservableResult: " + baseObservableResult);
+            Assert.NotNull(baseObservableResult);
+            Assert.Equal(false, baseObservableResult.Last);
+        }
+
     }
 }

@@ -1,9 +1,12 @@
-﻿using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using Esprima;
+using Esprima.Ast;
 using Jint.Native;
+using Jint.Native.Error;
 using Jint.Runtime.CallStack;
+using Jint.Runtime.Modules;
 using Jint.Runtime.References;
 
 namespace Jint.Runtime
@@ -11,19 +14,25 @@ namespace Jint.Runtime
     internal static class ExceptionHelper
     {
         [DoesNotReturn]
-        public static void ThrowSyntaxError(Realm realm, string message = null)
+        public static void ThrowSyntaxError(Realm realm, string? message = null)
         {
             throw new JavaScriptException(realm.Intrinsics.SyntaxError, message);
         }
 
         [DoesNotReturn]
-        public static void ThrowArgumentException(string message = null)
+        public static void ThrowSyntaxError(Realm realm, string message, Location location)
+        {
+            throw new JavaScriptException(realm.Intrinsics.SyntaxError, message).SetJavaScriptLocation(location);
+        }
+
+        [DoesNotReturn]
+        public static void ThrowArgumentException(string? message = null)
         {
             ThrowArgumentException(message, null);
         }
 
         [DoesNotReturn]
-        public static void ThrowArgumentException(string message, string paramName)
+        public static void ThrowArgumentException(string? message, string? paramName)
         {
             throw new ArgumentException(message, paramName);
         }
@@ -31,42 +40,52 @@ namespace Jint.Runtime
         [DoesNotReturn]
         public static void ThrowReferenceError(Realm realm, Reference reference)
         {
-            ThrowReferenceError(realm, reference?.GetReferencedName()?.ToString());
+            ThrowReferenceNameError(realm, reference?.GetReferencedName()?.ToString());
         }
 
         [DoesNotReturn]
-        public static void ThrowReferenceError(Realm realm, string name)
+        public static void ThrowReferenceNameError(Realm realm, string? name)
         {
             var message = name != null ? name + " is not defined" : null;
-            throw new JavaScriptException(realm.Intrinsics.ReferenceError, message);
+            ThrowReferenceError(realm, message);
         }
 
         [DoesNotReturn]
-        public static void ThrowTypeErrorNoEngine(string message = null, Exception exception = null)
+        public static void ThrowReferenceError(Realm realm, string? message)
         {
-            throw new TypeErrorException(message);
+            var location = realm.GlobalObject.Engine.GetLastSyntaxElement()?.Location ?? default;
+            throw new JavaScriptException(realm.Intrinsics.ReferenceError, message).SetJavaScriptLocation(location);
         }
 
         [DoesNotReturn]
-        public static void ThrowTypeError(Realm realm, string message = null, Exception exception = null)
+        public static void ThrowTypeErrorNoEngine(string? message = null, Node? source = null)
         {
-            throw new JavaScriptException(realm.Intrinsics.TypeError, message, exception);
+            throw new TypeErrorException(message, source);
         }
 
         [DoesNotReturn]
-        public static void ThrowRangeError(Realm realm, string message = null)
+        public static void ThrowTypeError(Realm realm, string? message = null)
         {
-            throw new JavaScriptException(realm.Intrinsics.RangeError, message);
+            var location = realm.GlobalObject.Engine.GetLastSyntaxElement()?.Location ?? default;
+            throw new JavaScriptException(realm.Intrinsics.TypeError, message).SetJavaScriptLocation(location);
+        }
+
+        [DoesNotReturn]
+        public static void ThrowRangeError(Realm realm, string? message = null)
+        {
+            var location = realm.GlobalObject.Engine.GetLastSyntaxElement()?.Location ?? default;
+            throw new JavaScriptException(realm.Intrinsics.RangeError, message).SetJavaScriptLocation(location);
         }
 
         [DoesNotReturn]
         public static void ThrowUriError(Realm realm)
         {
-            throw new JavaScriptException(realm.Intrinsics.UriError);
+            var location = realm.GlobalObject.Engine.GetLastSyntaxElement()?.Location ?? default;
+            throw new JavaScriptException(realm.Intrinsics.UriError).SetJavaScriptLocation(location);
         }
 
         [DoesNotReturn]
-        public static void ThrowNotImplementedException(string message = null)
+        public static void ThrowNotImplementedException(string? message = null)
         {
             throw new NotImplementedException(message);
         }
@@ -96,15 +115,15 @@ namespace Jint.Runtime
         }
 
         [DoesNotReturn]
-        public static void ThrowNotSupportedException(string message = null)
+        public static void ThrowNotSupportedException(string? message = null)
         {
             throw new NotSupportedException(message);
         }
 
         [DoesNotReturn]
-        public static void ThrowInvalidOperationException(string message = null)
+        public static void ThrowInvalidOperationException(string? message = null, Exception? exception = null)
         {
-            throw new InvalidOperationException(message);
+            throw new InvalidOperationException(message, exception);
         }
 
         [DoesNotReturn]
@@ -114,15 +133,33 @@ namespace Jint.Runtime
         }
 
         [DoesNotReturn]
-        public static void ThrowJavaScriptException(Engine engine, JsValue value, in Completion result)
+        public static void ThrowJavaScriptException(JsValue value)
         {
-            throw new JavaScriptException(value).SetCallstack(engine, result.Location);
+            throw new JavaScriptException(value);
         }
 
         [DoesNotReturn]
-        public static void ThrowRecursionDepthOverflowException(JintCallStack currentStack,
-            string currentExpressionReference)
+        public static void ThrowJavaScriptException(Engine engine, JsValue value, in Completion result)
         {
+            throw new JavaScriptException(value).SetJavaScriptCallstack(engine, result.Location);
+        }
+
+        [DoesNotReturn]
+        public static void ThrowJavaScriptException(Engine engine, JsValue value, in Location location)
+        {
+            throw new JavaScriptException(value).SetJavaScriptCallstack(engine, location);
+        }
+
+        [DoesNotReturn]
+        public static void ThrowJavaScriptException(ErrorConstructor errorConstructor, string message)
+        {
+            throw new JavaScriptException(errorConstructor, message);
+        }
+
+        [DoesNotReturn]
+        public static void ThrowRecursionDepthOverflowException(JintCallStack currentStack)
+        {
+            var currentExpressionReference = currentStack.Pop().ToString();
             throw new RecursionDepthOverflowException(currentStack, currentExpressionReference);
         }
 
@@ -143,7 +180,9 @@ namespace Jint.Runtime
             }
 
             ExceptionDispatchInfo.Capture(meaningfulException).Throw();
+#pragma warning disable CS8763
         }
+#pragma warning restore CS8763
 
         [DoesNotReturn]
         internal static void ThrowError(Engine engine, string message)
@@ -167,6 +206,12 @@ namespace Jint.Runtime
         public static void ThrowExecutionCanceledException()
         {
             throw new ExecutionCanceledException();
+        }
+
+        [DoesNotReturn]
+        public static void ThrowModuleResolutionException(string resolverAlgorithmError, string specifier, string? parent)
+        {
+            throw new ModuleResolutionException(resolverAlgorithmError, specifier, parent);
         }
     }
 }

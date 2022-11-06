@@ -1,4 +1,3 @@
-﻿using System.Collections.Generic;
 using System.Threading;
 
 namespace Jint.Native.String
@@ -10,8 +9,8 @@ namespace Jint.Native.String
     {
         private static readonly ThreadLocal<StringExecutionContext> _executionContext = new ThreadLocal<StringExecutionContext>(() => new StringExecutionContext());
 
-        private List<string> _splitSegmentList;
-        private string[] _splitArray1;
+        private List<string>? _splitSegmentList;
+        private string[]? _splitArray1;
 
         private StringExecutionContext()
         {

@@ -1,8 +1,5 @@
-#nullable enable
-
-using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Esprima;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Function;
@@ -11,35 +8,54 @@ using Jint.Runtime;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter;
 using Jint.Runtime.Interpreter.Expressions;
+using Jint.Runtime.Modules;
 
 namespace Jint
 {
     public static class EsprimaExtensions
     {
-        public static JsValue GetKey(this ClassProperty property, Engine engine) => GetKey(property.Key, engine, property.Computed);
+        public static JsValue GetKey<T>(this T property, Engine engine) where T : IProperty => GetKey(property.Key, engine, property.Computed);
 
         public static JsValue GetKey(this Expression expression, Engine engine, bool resolveComputed = false)
         {
-            if (expression is Literal literal)
+            var key = TryGetKey(expression, engine, resolveComputed);
+            if (key is not null)
             {
-                return LiteralKeyToString(literal);
+                return TypeConverter.ToPropertyKey(key);
             }
 
-            if (!resolveComputed && expression is Identifier identifier)
-            {
-                return identifier.Name;
-            }
-
-            if (!resolveComputed || !TryGetComputedPropertyKey(expression, engine, out var propertyKey))
-            {
-                ExceptionHelper.ThrowArgumentException("Unable to extract correct key, node type: " + expression.Type);
-                return null;
-            }
-
-            return propertyKey;
+            ExceptionHelper.ThrowArgumentException("Unable to extract correct key, node type: " + expression.Type);
+            return JsValue.Undefined;
         }
 
-        private static bool TryGetComputedPropertyKey<T>(T expression, Engine engine, out JsValue propertyKey)
+        internal static JsValue TryGetKey<T>(this T property, Engine engine) where T : IProperty
+        {
+            return TryGetKey(property.Key, engine, property.Computed);
+        }
+
+        internal static JsValue TryGetKey<T>(this T expression, Engine engine, bool resolveComputed) where T : Expression
+        {
+            JsValue key;
+            if (expression is Literal literal)
+            {
+                key = literal.TokenType == TokenType.NullLiteral ? JsValue.Null : LiteralKeyToString(literal);
+            }
+            else if (!resolveComputed && expression is Identifier identifier)
+            {
+                key = identifier.Name;
+            }
+            else if (resolveComputed)
+            {
+                return TryGetComputedPropertyKey(expression, engine);
+            }
+            else
+            {
+                key = JsValue.Undefined;
+            }
+            return key;
+        }
+
+        private static JsValue TryGetComputedPropertyKey<T>(T expression, Engine engine)
             where T : Expression
         {
             if (expression.Type is Nodes.Identifier
@@ -48,15 +64,18 @@ namespace Jint
                 or Nodes.UpdateExpression
                 or Nodes.AssignmentExpression
                 or Nodes.UnaryExpression
-                or Nodes.MemberExpression)
+                or Nodes.MemberExpression
+                or Nodes.LogicalExpression
+                or Nodes.ConditionalExpression
+                or Nodes.ArrowFunctionExpression
+                or Nodes.FunctionExpression
+                or Nodes.YieldExpression)
             {
                 var context = engine._activeEvaluationContext;
-                propertyKey = TypeConverter.ToPropertyKey(JintExpression.Build(engine, expression).GetValue(context).Value);
-                return true;
+                return JintExpression.Build(expression).GetValue(context!);
             }
 
-            propertyKey = string.Empty;
-            return false;
+            return JsValue.Undefined;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -68,6 +87,15 @@ namespace Jint
                 or Nodes.ArrowFunctionExpression
                 or Nodes.ArrowParameterPlaceHolder
                 or Nodes.ClassExpression;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-static-semantics-isconstantdeclaration
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool IsConstantDeclaration(this Declaration d)
+        {
+            return d is VariableDeclaration { Kind: VariableDeclarationKind.Const };
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -128,6 +156,7 @@ namespace Jint
             {
                 return TypeConverter.ToString(d);
             }
+
             return literal.Value as string ?? Convert.ToString(literal.Value, provider: null);
         }
 
@@ -151,7 +180,7 @@ namespace Jint
             // try to get away without a loop
             if (parameter is Identifier id)
             {
-                target.Add(id.Name!);
+                target.Add(id.Name);
                 return;
             }
 
@@ -165,7 +194,7 @@ namespace Jint
             {
                 if (parameter is Identifier identifier)
                 {
-                    target.Add(identifier.Name!);
+                    target.Add(identifier.Name);
                     return;
                 }
 
@@ -174,7 +203,8 @@ namespace Jint
                     parameter = restElement.Argument;
                     continue;
                 }
-                else if (parameter is ArrayPattern arrayPattern)
+
+                if (parameter is ArrayPattern arrayPattern)
                 {
                     ref readonly var arrayPatternElements = ref arrayPattern.Elements;
                     for (var i = 0; i < arrayPatternElements.Count; i++)
@@ -204,12 +234,21 @@ namespace Jint
                     parameter = assignmentPattern.Left;
                     continue;
                 }
+                else if (parameter is ClassDeclaration classDeclaration)
+                {
+                    var name = classDeclaration.Id?.Name;
+                    if (name != null)
+                    {
+                        target.Add(name);
+                    }
+                }
+
                 break;
             }
         }
 
         internal static void BindingInitialization(
-            this Expression? expression,
+            this Node? expression,
             EvaluationContext context,
             JsValue value,
             EnvironmentRecord env)
@@ -232,30 +271,179 @@ namespace Jint
         /// <summary>
         /// https://tc39.es/ecma262/#sec-runtime-semantics-definemethod
         /// </summary>
-        internal static Record DefineMethod(this ClassProperty m, ObjectInstance obj, ObjectInstance? functionPrototype = null)
+        internal static Record DefineMethod<T>(this T m, ObjectInstance obj, ObjectInstance? functionPrototype = null) where T : IProperty
         {
             var engine = obj.Engine;
-            var property = TypeConverter.ToPropertyKey(m.GetKey(engine));
-            var prototype = functionPrototype ?? engine.Realm.Intrinsics.Function.PrototypeObject;
+            var propKey = TypeConverter.ToPropertyKey(m.GetKey(engine));
+            var intrinsics = engine.Realm.Intrinsics;
+
+            var runningExecutionContext = engine.ExecutionContext;
+            var scope = runningExecutionContext.LexicalEnvironment;
+            var privateScope= runningExecutionContext.PrivateEnvironment;
+
+            var prototype = functionPrototype ?? intrinsics.Function.PrototypeObject;
             var function = m.Value as IFunction;
             if (function is null)
             {
                 ExceptionHelper.ThrowSyntaxError(engine.Realm);
             }
 
-            var functionDefinition = new JintFunctionDefinition(engine, function);
-            var closure = new ScriptFunctionInstance(
-                engine,
-                functionDefinition,
-                engine.ExecutionContext.LexicalEnvironment,
-                functionDefinition.ThisMode,
-                prototype);
-
+            var definition = new JintFunctionDefinition(function);
+            var closure = intrinsics.Function.OrdinaryFunctionCreate(prototype, definition, definition.ThisMode, scope, privateScope);
             closure.MakeMethod(obj);
 
-            return new Record(property, closure);
+            return new Record(propKey, closure);
+        }
+
+        internal static void GetImportEntries(this ImportDeclaration import, List<ImportEntry> importEntries, HashSet<string> requestedModules)
+        {
+            var source = import.Source.StringValue!;
+            var specifiers = import.Specifiers;
+            requestedModules.Add(source);
+
+            foreach (var specifier in specifiers)
+            {
+                switch (specifier)
+                {
+                    case ImportNamespaceSpecifier namespaceSpecifier:
+                        importEntries.Add(new ImportEntry(source, "*", namespaceSpecifier.Local.GetModuleKey()));
+                        break;
+                    case ImportSpecifier importSpecifier:
+                        importEntries.Add(new ImportEntry(source, importSpecifier.Imported.GetModuleKey(), importSpecifier.Local.GetModuleKey()));
+                        break;
+                    case ImportDefaultSpecifier defaultSpecifier:
+                        importEntries.Add(new ImportEntry(source, "default", defaultSpecifier.Local.GetModuleKey()));
+                        break;
+                }
+            }
+        }
+
+        internal static void GetExportEntries(this ExportDeclaration export, List<ExportEntry> exportEntries, HashSet<string> requestedModules)
+        {
+            switch (export)
+            {
+                case ExportDefaultDeclaration defaultDeclaration:
+                    GetExportEntries(true, defaultDeclaration.Declaration, exportEntries);
+                    break;
+                case ExportAllDeclaration allDeclaration:
+                    //Note: there is a pending PR for Esprima to support exporting an imported modules content as a namespace i.e. 'export * as ns from "mod"'
+                    requestedModules.Add(allDeclaration.Source.StringValue!);
+                    exportEntries.Add(new(allDeclaration.Exported?.GetModuleKey(), allDeclaration.Source.StringValue, "*", null));
+                    break;
+                case ExportNamedDeclaration namedDeclaration:
+                    ref readonly var specifiers = ref namedDeclaration.Specifiers;
+                    if (specifiers.Count == 0)
+                    {
+                        GetExportEntries(false, namedDeclaration.Declaration!, exportEntries, namedDeclaration.Source?.StringValue);
+                    }
+                    else
+                    {
+                        for (var i = 0; i < specifiers.Count; i++)
+                        {
+                            var specifier = specifiers[i];
+                            if (namedDeclaration.Source != null)
+                            {
+                                exportEntries.Add(new(specifier.Exported.GetModuleKey(), namedDeclaration.Source.StringValue, specifier.Local.GetModuleKey(), null));
+                            }
+                            else
+                            {
+                                exportEntries.Add(new(specifier.Exported.GetModuleKey(), null, null, specifier.Local.GetModuleKey()));
+                            }
+                        }
+                    }
+
+                    if (namedDeclaration.Source is not null)
+                    {
+                        requestedModules.Add(namedDeclaration.Source.StringValue!);
+                    }
+
+                    break;
+            }
+        }
+
+        private static void GetExportEntries(bool defaultExport, StatementListItem declaration, List<ExportEntry> exportEntries, string? moduleRequest = null)
+        {
+            var names = GetExportNames(declaration);
+
+            if (names.Count == 0)
+            {
+                if (defaultExport)
+                {
+                    exportEntries.Add(new("default", null, null, "*default*"));
+                }
+            }
+            else
+            {
+                for (var i = 0; i < names.Count; i++)
+                {
+                    var name = names[i];
+                    var exportName = defaultExport ? "default" : name;
+                    exportEntries.Add(new(exportName, moduleRequest, null, name));
+                }
+            }
+        }
+
+        private static List<string> GetExportNames(StatementListItem declaration)
+        {
+            var result = new List<string>();
+
+            switch (declaration)
+            {
+                case FunctionDeclaration functionDeclaration:
+                    var funcName = functionDeclaration.Id?.Name;
+                    if (funcName is not null)
+                    {
+                        result.Add(funcName);
+                    }
+
+                    break;
+                case ClassDeclaration classDeclaration:
+                    var className = classDeclaration.Id?.Name;
+                    if (className is not null)
+                    {
+                        result.Add(className);
+                    }
+
+                    break;
+                case VariableDeclaration variableDeclaration:
+                    ref readonly var declarators = ref variableDeclaration.Declarations;
+                    for (var i = 0; i < declarators.Count; i++)
+                    {
+                        var declarator = declarators[i];
+                        var varName = declarator.Id.As<Identifier>()?.Name;
+                        if (varName is not null)
+                        {
+                            result.Add(varName);
+                        }
+                    }
+
+                    break;
+            }
+
+            return result;
+        }
+
+        private static string? GetModuleKey(this Expression expression)
+        {
+            return (expression as Identifier)?.Name ?? (expression as Literal)?.StringValue;
         }
 
         internal readonly record struct Record(JsValue Key, ScriptFunctionInstance Closure);
+
+        /// <summary>
+        /// Creates a dummy node that can be used when only location available and node is required.
+        /// </summary>
+        internal static SyntaxElement CreateLocationNode(in Location location)
+        {
+            return new MinimalSyntaxElement(location);
+        }
+    }
+
+    internal sealed class MinimalSyntaxElement : SyntaxElement
+    {
+        public MinimalSyntaxElement(in Location location)
+        {
+            Location = location;
+        }
     }
 }

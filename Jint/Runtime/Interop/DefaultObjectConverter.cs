@@ -1,5 +1,4 @@
-using System;
-using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using Jint.Native;
 using Jint.Native.Array;
@@ -31,11 +30,11 @@ namespace Jint
             { typeof(ulong), (engine, v) => JsNumber.Create((ulong)v) },
             {
                 typeof(System.Text.RegularExpressions.Regex),
-                (engine, v) => engine.Realm.Intrinsics.RegExp.Construct((System.Text.RegularExpressions.Regex)v, "")
+                (engine, v) => engine.Realm.Intrinsics.RegExp.Construct((System.Text.RegularExpressions.Regex)v, ((System.Text.RegularExpressions.Regex)v).ToString(), "")
             }
         };
 
-        public static bool TryConvert(Engine engine, object value, out JsValue result)
+        public static bool TryConvert(Engine engine, object value, [NotNullWhen(true)] out JsValue? result)
         {
             result = null;
             var valueType = value.GetType();
@@ -103,7 +102,21 @@ namespace Jint
                     }
                     else
                     {
-                        result = engine.Options.Interop.WrapObjectHandler.Invoke(engine, value);
+                        // check global cache, have we already wrapped the value?
+                        if (engine._objectWrapperCache.TryGetValue(value, out var cached))
+                        {
+                            result = cached;
+                        }
+                        else
+                        {
+                            var wrapped = engine.Options.Interop.WrapObjectHandler.Invoke(engine, value);
+                            result = wrapped;
+
+                            if (engine.Options.Interop.TrackObjectWrapperIdentity && wrapped is not null)
+                            {
+                                engine._objectWrapperCache.Add(value, wrapped);
+                            }
+                        }
                     }
 
                     // if no known type could be guessed, use the default of wrapping using using ObjectWrapper.
@@ -113,7 +126,7 @@ namespace Jint
             return result is not null;
         }
 
-        private static bool TryConvertConvertible(Engine engine, IConvertible convertible, out JsValue result)
+        private static bool TryConvertConvertible(Engine engine, IConvertible convertible, [NotNullWhen(true)] out JsValue? result)
         {
             result = convertible.GetTypeCode() switch
             {
@@ -153,7 +166,7 @@ namespace Jint
             for (uint i = 0; i < arrayLength; ++i)
             {
                 var jsItem = JsValue.FromObject(e, array.GetValue(i));
-                jsArray.WriteArrayValue(i, new PropertyDescriptor(jsItem, PropertyFlag.ConfigurableEnumerableWritable));
+                jsArray.WriteArrayValue(i, jsItem);
             }
 
             jsArray.SetOwnProperty(CommonProperties.Length,

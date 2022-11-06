@@ -1,6 +1,4 @@
-﻿using System;
-using System.Diagnostics;
-using System.IO;
+﻿using System.Diagnostics;
 using System.Reflection;
 using Esprima;
 using Jint.Native;
@@ -32,7 +30,7 @@ namespace Jint.Repl
                 }
 
                 var script = File.ReadAllText(filename);
-                engine.Evaluate(script);
+                engine.Evaluate(script, "repl");
                 return;
             }
 
@@ -47,11 +45,13 @@ namespace Jint.Repl
             Console.WriteLine();
 
             var defaultColor = Console.ForegroundColor;
-            var parserOptions = new ParserOptions("repl")
+            var parserOptions = new ParserOptions
             {
                 Tolerant = true,
                 AdaptRegexp = true
             };
+
+            var serializer = new JsonSerializer(engine);
 
             while (true)
             {
@@ -66,15 +66,21 @@ namespace Jint.Repl
                 try
                 {
                     var result = engine.Evaluate(input, parserOptions);
-                    if (!result.IsNull() && !result.IsUndefined())
+                    if (!result.IsPrimitive() && result is not IPrimitiveInstance)
                     {
-                        var serializer = new JsonSerializer(engine);
                         var str = serializer.Serialize(result, Undefined.Instance, "  ");
                         Console.WriteLine(str);
                     }
                     else
                     {
-                        Console.WriteLine(result);
+                        if (result.IsString())
+                        {
+                            Console.WriteLine(serializer.Serialize(result, Undefined.Instance, Undefined.Instance));
+                        }
+                        else
+                        {
+                            Console.WriteLine(result);
+                        }
                     }
                 }
                 catch (JavaScriptException je)

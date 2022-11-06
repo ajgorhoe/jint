@@ -1,4 +1,3 @@
-﻿using System;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Jint.Collections;
@@ -11,9 +10,9 @@ using Jint.Runtime.Interop;
 namespace Jint.Native.Date
 {
     /// <summary>
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.9.5
+    /// https://tc39.es/ecma262/#sec-properties-of-the-date-prototype-object
     /// </summary>
-    public sealed class DatePrototype : ObjectInstance
+    internal sealed class DatePrototype : ObjectInstance
     {
         // ES6 section 20.3.1.1 Time Values and Time Range
         private const double MinYear = -1000000.0;
@@ -99,6 +98,9 @@ namespace Jint.Native.Date
             SetSymbols(symbols);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype-@@toprimitive
+        /// </summary>
         private JsValue ToPrimitive(JsValue thisObject, JsValue[] arguments)
         {
             var oi = thisObject as ObjectInstance;
@@ -133,98 +135,128 @@ namespace Jint.Native.Date
 
         private JsValue ValueOf(JsValue thisObj, JsValue[] arguments)
         {
-            return EnsureDateInstance(thisObj).PrimitiveValue;
+            return ThisTimeValue(thisObj);
         }
 
         /// <summary>
-        /// Converts a value to a <see cref="DateInstance"/> or throws a TypeError exception.
-        /// c.f., http://www.ecma-international.org/ecma-262/5.1/#sec-15.9.5
+        /// https://tc39.es/ecma262/#thistimevalue
         /// </summary>
-        private DateInstance EnsureDateInstance(JsValue thisObj)
+        private double ThisTimeValue(JsValue thisObj)
         {
             if (thisObj is DateInstance dateInstance)
             {
-                return dateInstance;
+                return dateInstance.DateValue;
             }
 
             ExceptionHelper.ThrowTypeError(_realm, "this is not a Date object");
-            return null;
+            return 0;
         }
 
-        public JsValue ToString(JsValue thisObj, JsValue[] arg2)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.tostring
+        /// </summary>
+        internal JsValue ToString(JsValue thisObj, JsValue[] arg2)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
-
-            if (double.IsNaN(dateInstance.PrimitiveValue))
-                return "Invalid Date";
-
-            var t = ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone);
-            return t.ToString("ddd MMM dd yyyy HH:mm:ss ", CultureInfo.InvariantCulture) + TimeZoneString(t);
+            var tv = ThisTimeValue(thisObj);
+            return ToDateString(tv);
         }
 
-        internal JsValue ToDateString(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.todatestring
+        /// </summary>
+        private JsValue ToDateString(JsValue thisObj, JsValue[] arguments)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
+            var tv = ThisTimeValue(thisObj);
 
-            if (double.IsNaN(dateInstance.PrimitiveValue))
+            if (double.IsNaN(tv))
+            {
                 return "Invalid Date";
+            }
 
-            return ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone).ToString("ddd MMM dd yyyy", CultureInfo.InvariantCulture);
+            var t = LocalTime(tv);
+            return DateString(t);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-todatestring
+        /// </summary>
+        private JsValue ToDateString(double tv)
+        {
+            if (double.IsNaN(tv))
+            {
+                return "Invalid Date";
+            }
+
+            var t = LocalTime(tv);
+            return DateString(t) + " " + TimeString(t) + TimeZoneString(tv);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.totimestring
+        /// </summary>
         private JsValue ToTimeString(JsValue thisObj, JsValue[] arguments)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
+            var tv = ThisTimeValue(thisObj);
 
-            if (double.IsNaN(dateInstance.PrimitiveValue))
+            if (double.IsNaN(tv))
+            {
                 return "Invalid Date";
+            }
 
-            var t = ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone);
+            var t = LocalTime(tv);
 
-            var timeString = t.ToString("HH:mm:ss ", CultureInfo.InvariantCulture);
-            var timeZoneString = TimeZoneString(t);
-            return timeString + timeZoneString;
+            return TimeString(t) + TimeZoneString(tv);
         }
 
-        private static string TimeZoneString(DateTimeOffset t)
-        {
-            return t.ToString("'GMT'K", CultureInfo.InvariantCulture).Replace(":", "");
-        }
-
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.tolocalestring
+        /// </summary>
         private JsValue ToLocaleString(JsValue thisObj, JsValue[] arguments)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
+            var dateInstance = ThisTimeValue(thisObj);
 
-            if (double.IsNaN(dateInstance.PrimitiveValue))
+            if (double.IsNaN(dateInstance))
+            {
                 return "Invalid Date";
+            }
 
             return ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone).ToString("F", Engine.Options.Culture);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.tolocaledatestring
+        /// </summary>
         private JsValue ToLocaleDateString(JsValue thisObj, JsValue[] arguments)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
+            var dateInstance = ThisTimeValue(thisObj);
 
-            if (double.IsNaN(dateInstance.PrimitiveValue))
+            if (double.IsNaN(dateInstance))
+            {
                 return "Invalid Date";
+            }
 
             return ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone).ToString("D", Engine.Options.Culture);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.tolocaletimestring
+        /// </summary>
         private JsValue ToLocaleTimeString(JsValue thisObj, JsValue[] arguments)
         {
-            var dateInstance = EnsureDateInstance(thisObj);
+            var dateInstance = ThisTimeValue(thisObj);
 
-            if (double.IsNaN(dateInstance.PrimitiveValue))
+            if (double.IsNaN(dateInstance))
+            {
                 return "Invalid Date";
+            }
 
             return ToLocalTime(dateInstance.ToDateTime(), Engine.Options.TimeZone).ToString("T", Engine.Options.Culture);
         }
 
         private JsValue GetTime(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -233,8 +265,8 @@ namespace Jint.Native.Date
 
         private JsValue GetFullYear(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -243,8 +275,8 @@ namespace Jint.Native.Date
 
         private JsValue GetYear(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -253,8 +285,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCFullYear(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -263,28 +295,34 @@ namespace Jint.Native.Date
 
         private JsValue GetMonth(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
             return MonthFromTime(LocalTime(t));
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.getutcmonth
+        /// </summary>
         private JsValue GetUTCMonth(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
             return MonthFromTime(t);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.getdate
+        /// </summary>
         private JsValue GetDate(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -293,8 +331,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCDate(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -303,8 +341,8 @@ namespace Jint.Native.Date
 
         private JsValue GetDay(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -313,8 +351,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCDay(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -323,8 +361,8 @@ namespace Jint.Native.Date
 
         private JsValue GetHours(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -333,8 +371,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCHours(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -343,8 +381,8 @@ namespace Jint.Native.Date
 
         private JsValue GetMinutes(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -353,8 +391,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCMinutes(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -363,8 +401,8 @@ namespace Jint.Native.Date
 
         private JsValue GetSeconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -373,8 +411,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCSeconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -383,8 +421,8 @@ namespace Jint.Native.Date
 
         private JsValue GetMilliseconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -393,8 +431,8 @@ namespace Jint.Native.Date
 
         private JsValue GetUTCMilliseconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
@@ -403,223 +441,298 @@ namespace Jint.Native.Date
 
         private JsValue GetTimezoneOffset(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
             return (int) (t - LocalTime(t))/MsPerMinute;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.settime
+        /// </summary>
         private JsValue SetTime(JsValue thisObj, JsValue[] arguments)
         {
-            return EnsureDateInstance(thisObj).PrimitiveValue = TimeClip(TypeConverter.ToNumber(arguments.At(0)));
+            ThisTimeValue(thisObj);
+            var t = TypeConverter.ToNumber(arguments.At(0));
+            var v = t.TimeClip();
+
+            ((DateInstance) thisObj)._dateValue = t;
+            return v;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setmilliseconds
+        /// </summary>
         private JsValue SetMilliseconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
+            var t = LocalTime(ThisTimeValue(thisObj));
+            var ms = TypeConverter.ToNumber(arguments.At(0));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), TypeConverter.ToNumber(arguments.At(0)));
-            var u = TimeClip(Utc(MakeDate(Day(t), time)));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+
+            var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), ms);
+            var u = Utc(MakeDate(Day(t), time)).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcmilliseconds
+        /// </summary>
         private JsValue SetUTCMilliseconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
+            var t = ThisTimeValue(thisObj);
+            var milli = TypeConverter.ToNumber(arguments.At(0));
 
-            if (!IsFinite(t))
+            if (double.IsNaN(t))
             {
                 return double.NaN;
             }
 
-            var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), TypeConverter.ToNumber(arguments.At(0)));
-            var u = TimeClip(MakeDate(Day(t), time));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), milli);
+            var u = MakeDate(Day(t), time).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setseconds
+        /// </summary>
         private JsValue SetSeconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
+            var t = LocalTime(ThisTimeValue(thisObj));
+            var s = TypeConverter.ToNumber(arguments.At(0));
+            var milli = arguments.Length <= 1 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var s = TypeConverter.ToNumber(arguments.At(0));
-            var milli = arguments.Length <= 1 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
             var date = MakeDate(Day(t), MakeTime(HourFromTime(t), MinFromTime(t), s, milli));
-            var u = TimeClip(Utc(date));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(date).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcseconds
+        /// </summary>
         private JsValue SetUTCSeconds(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
-            {
-                return JsNumber.DoubleNaN;
-            }
+            var t = ThisTimeValue(thisObj);
             var s = TypeConverter.ToNumber(arguments.At(0));
             var milli = arguments.Length <= 1 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
+            if (double.IsNaN(t))
+            {
+                return JsNumber.DoubleNaN;
+            }
+
             var date = MakeDate(Day(t), MakeTime(HourFromTime(t), MinFromTime(t), s, milli));
-            var u = TimeClip(date);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = date.TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setminutes
+        /// </summary>
         private JsValue SetMinutes(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
-            {
-                return JsNumber.DoubleNaN;
-            }
+            var t = LocalTime(ThisTimeValue(thisObj));
             var m = TypeConverter.ToNumber(arguments.At(0));
             var s = arguments.Length <= 1 ? SecFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var milli = arguments.Length <= 2 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
+
+            if (double.IsNaN(t))
+            {
+                return JsNumber.DoubleNaN;
+            }
+
             var date = MakeDate(Day(t), MakeTime(HourFromTime(t), m, s, milli));
-            var u = TimeClip(Utc(date));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(date).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcminutes
+        /// </summary>
         private JsValue SetUTCMinutes(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
-            {
-                return JsNumber.DoubleNaN;
-            }
+            var t = ThisTimeValue(thisObj);
             var m = TypeConverter.ToNumber(arguments.At(0));
             var s = arguments.Length <= 1 ? SecFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var milli = arguments.Length <= 2 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
+
+            if (double.IsNaN(t))
+            {
+                return JsNumber.DoubleNaN;
+            }
+
             var date = MakeDate(Day(t), MakeTime(HourFromTime(t), m, s, milli));
-            var u = TimeClip(date);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = date.TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.sethours
+        /// </summary>
         private JsValue SetHours(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
-            {
-                return JsNumber.DoubleNaN;
-            }
+            var t = LocalTime(ThisTimeValue(thisObj));
             var h = TypeConverter.ToNumber(arguments.At(0));
             var m = arguments.Length <= 1 ? MinFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var s = arguments.Length <= 2 ? SecFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
             var milli = arguments.Length <= 3 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(3));
+
+            if (double.IsNaN(t))
+            {
+                return JsNumber.DoubleNaN;
+            }
+
             var date = MakeDate(Day(t), MakeTime(h, m, s, milli));
-            var u = TimeClip(Utc(date));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(date).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutchours
+        /// </summary>
         private JsValue SetUTCHours(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
-            {
-                return JsNumber.DoubleNaN;
-            }
+            var t = ThisTimeValue(thisObj);
             var h = TypeConverter.ToNumber(arguments.At(0));
             var m = arguments.Length <= 1 ? MinFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var s = arguments.Length <= 2 ? SecFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
             var milli = arguments.Length <= 3 ? MsFromTime(t) : TypeConverter.ToNumber(arguments.At(3));
-            var date = MakeDate(Day(t), MakeTime(h, m, s, milli));
-            var u = TimeClip(date);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
-            return u;
+
+            if (double.IsNaN(t))
+            {
+                return JsNumber.DoubleNaN;
+            }
+
+            var newDate = MakeDate(Day(t), MakeTime(h, m, s, milli));
+            var v = newDate.TimeClip();
+            ((DateInstance) thisObj)._dateValue = v;
+            return v;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setdate
+        /// </summary>
         private JsValue SetDate(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
+            var t = LocalTime(ThisTimeValue(thisObj));
+            var dt = TypeConverter.ToNumber(arguments.At(0));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var dt = TypeConverter.ToNumber(arguments.At(0));
+
             var (year, month, __) = YearMonthDayFromTime(t);
             var newDate = MakeDate(MakeDay(year, month, dt), TimeWithinDay(t));
-            var u = TimeClip(Utc(newDate));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(newDate).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcdate
+        /// </summary>
         private JsValue SetUTCDate(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            var dt = TypeConverter.ToNumber(arguments.At(0));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var dt = TypeConverter.ToNumber(arguments.At(0));
+
             var newDate = MakeDate(MakeDay(YearFromTime(t), MonthFromTime(t), dt), TimeWithinDay(t));
-            var u = TimeClip(newDate);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = newDate.TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setmonth
+        /// </summary>
         private JsValue SetMonth(JsValue thisObj, JsValue[] arguments)
         {
-            var t = LocalTime(EnsureDateInstance(thisObj).PrimitiveValue);
-            if (!IsFinite(t))
+            var t = LocalTime(ThisTimeValue(thisObj));
+            var m = TypeConverter.ToNumber(arguments.At(0));
+            var dt = arguments.Length <= 1 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var m = TypeConverter.ToNumber(arguments.At(0));
-            var dt = arguments.Length <= 1 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
             var newDate = MakeDate(MakeDay(YearFromTime(t), m, dt), TimeWithinDay(t));
-            var u = TimeClip(Utc(newDate));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(newDate).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcmonth
+        /// </summary>
         private JsValue SetUTCMonth(JsValue thisObj, JsValue[] arguments)
         {
-            var t = EnsureDateInstance(thisObj).PrimitiveValue;
-            if (!IsFinite(t))
+            var t = ThisTimeValue(thisObj);
+            var m = TypeConverter.ToNumber(arguments.At(0));
+            var dt = arguments.Length <= 1 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
+            if (double.IsNaN(t))
             {
                 return JsNumber.DoubleNaN;
             }
-            var m = TypeConverter.ToNumber(arguments.At(0));
-            var dt = arguments.Length <= 1 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
+
             var newDate = MakeDate(MakeDay(YearFromTime(t), m, dt), TimeWithinDay(t));
-            var u = TimeClip(newDate);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = newDate.TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setfullyear
+        /// </summary>
         private JsValue SetFullYear(JsValue thisObj, JsValue[] arguments)
         {
-            var thisTime = EnsureDateInstance(thisObj).PrimitiveValue;
+            var thisTime = ThisTimeValue(thisObj);
             var t = double.IsNaN(thisTime) ? 0 : LocalTime(thisTime);
             var y = TypeConverter.ToNumber(arguments.At(0));
             var m = arguments.Length <= 1 ? MonthFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var dt = arguments.Length <= 2 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
+
             var newDate = MakeDate(MakeDay(y, m, dt), TimeWithinDay(t));
-            var u = TimeClip(Utc(newDate));
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = Utc(newDate).TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setyear
+        /// </summary>
         private JsValue SetYear(JsValue thisObj, JsValue[] arguments)
         {
-            var thisTime = EnsureDateInstance(thisObj).PrimitiveValue;
+            var thisTime = ThisTimeValue(thisObj);
             var t = double.IsNaN(thisTime) ? 0 : LocalTime(thisTime);
             var y = TypeConverter.ToNumber(arguments.At(0));
             if (double.IsNaN(y))
             {
-                EnsureDateInstance(thisObj).PrimitiveValue = double.NaN;
+                ((DateInstance) thisObj)._dateValue = double.NaN;
                 return JsNumber.DoubleNaN;
             }
 
@@ -631,43 +744,52 @@ namespace Jint.Native.Date
 
             var newDate = MakeDay(fy, MonthFromTime(t), DateFromTime(t));
             var u = Utc(MakeDate(newDate, TimeWithinDay(t)));
-            EnsureDateInstance(thisObj).PrimitiveValue = TimeClip(u);
+            ((DateInstance) thisObj)._dateValue = u.TimeClip();
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.setutcfullyear
+        /// </summary>
         private JsValue SetUTCFullYear(JsValue thisObj, JsValue[] arguments)
         {
-            var thisTime = EnsureDateInstance(thisObj).PrimitiveValue;
+            var thisTime = ThisTimeValue(thisObj);
             var t = (long) (double.IsNaN(thisTime) ? 0 : thisTime);
             var y = TypeConverter.ToNumber(arguments.At(0));
             var m = arguments.Length <= 1 ? MonthFromTime(t) : TypeConverter.ToNumber(arguments.At(1));
             var dt = arguments.Length <= 2 ? DateFromTime(t) : TypeConverter.ToNumber(arguments.At(2));
             var newDate = MakeDate(MakeDay(y, m, dt), TimeWithinDay(t));
-            var u = TimeClip(newDate);
-            thisObj.As<DateInstance>().PrimitiveValue = u;
+            var u = newDate.TimeClip();
+            ((DateInstance) thisObj)._dateValue = u;
             return u;
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.toutcstring
+        /// </summary>
         private JsValue ToUtcString(JsValue thisObj, JsValue[] arguments)
         {
-            var thisTime = EnsureDateInstance(thisObj);
-            if (!IsFinite(thisTime.PrimitiveValue))
+            var thisTime = ThisTimeValue(thisObj);
+            if (!IsFinite(thisTime))
             {
                 return "Invalid Date";
             }
             return thisTime.ToDateTime().ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", CultureInfo.InvariantCulture);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.prototype.toisostring
+        /// </summary>
         private JsValue ToISOString(JsValue thisObj, JsValue[] arguments)
         {
-            var thisTime = EnsureDateInstance(thisObj);
-            var t = thisTime.PrimitiveValue;
-            if (!IsFinite(t))
+            var thisTime = ThisTimeValue(thisObj);
+            var t = thisTime;
+            if (double.IsNaN(t))
             {
                 ExceptionHelper.ThrowRangeError(_realm);
             }
 
-            if (thisTime.DateTimeRangeValid)
+            if (((DateInstance) thisObj).DateTimeRangeValid)
             {
                 // shortcut
                 var dt = thisTime.ToDateTime();
@@ -706,26 +828,26 @@ namespace Jint.Native.Date
             return callable.Call(o, Arguments.Empty);
         }
 
-        public const int HoursPerDay = 24;
-        public const int MinutesPerHour = 60;
-        public const int SecondsPerMinute = 60;
-        public const int MsPerSecond = 1000;
-        public const int MsPerMinute = 60000;
-        public const int MsPerHour = 3600000;
-        public const long MsPerDay = 86400000;
+        private const int HoursPerDay = 24;
+        private const int MinutesPerHour = 60;
+        private const int SecondsPerMinute = 60;
+        private const int MsPerSecond = 1000;
+        private const int MsPerMinute = 60000;
+        private const int MsPerHour = 3600000;
+        private const long MsPerDay = 86400000;
 
         /// <summary>
-        /// 15.9.1.2
+        /// https://tc39.es/ecma262/#eqn-Day
         /// </summary>
-        public static int Day(double t)
+        private static int Day(double t)
         {
             return (int) System.Math.Floor(t / MsPerDay);
         }
 
         /// <summary>
-        /// 15.9.1.2
+        /// https://tc39.es/ecma262/#eqn-Day
         /// </summary>
-        public static double TimeWithinDay(double t)
+        private static double TimeWithinDay(double t)
         {
             var result = t % MsPerDay;
 
@@ -740,7 +862,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// The number of days in a year
         /// </summary>
-        public static int DaysInYear(double y)
+        private static int DaysInYear(double y)
         {
             if (y%4 != 0)
             {
@@ -768,7 +890,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// The day number of the first day of the year.
         /// </summary>
-        public static int DayFromYear(double y)
+        private static int DayFromYear(double y)
         {
             return (int) (365*(y - 1970)
                           + System.Math.Floor((y - 1969)/4)
@@ -779,7 +901,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// The time value of the start of the year
         /// </summary>
-        public static long TimeFromYear(double y)
+        private static long TimeFromYear(double y)
         {
             return MsPerDay*DayFromYear(y);
         }
@@ -787,7 +909,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// The year of a time value.
         /// </summary>
-        public static int YearFromTime(double t)
+        private static int YearFromTime(double t)
         {
             var (year, _, _) = YearMonthDayFromTime(t);
             return year;
@@ -796,7 +918,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// <value>true</value> if the time is within a leap year, <value>false</value> otherwise
         /// </summary>
-        public static int InLeapYear(double t)
+        private static int InLeapYear(double t)
         {
             var daysInYear = DaysInYear(YearFromTime(t));
 
@@ -817,7 +939,7 @@ namespace Jint.Native.Date
         /// <summary>
         /// The month number of a time value.
         /// </summary>
-        public static int MonthFromTime(double t)
+        private static int MonthFromTime(double t)
         {
             var dayWithinYear = DayWithinYear(t);
             var inLeapYear = InLeapYear(t);
@@ -886,12 +1008,12 @@ namespace Jint.Native.Date
             return 0;
         }
 
-        public static int DayWithinYear(double t)
+        private static int DayWithinYear(double t)
         {
             return Day(t) - DayFromYear(YearFromTime(t));
         }
 
-        public static int DateFromTime(double t)
+        private static int DateFromTime(double t)
         {
             var monthFromTime = MonthFromTime(t);
             var dayWithinYear = DayWithinYear(t);
@@ -961,31 +1083,24 @@ namespace Jint.Native.Date
         }
 
         /// <summary>
-        /// The weekday for a particular time value.
+        /// https://tc39.es/ecma262/#sec-week-day
         /// </summary>
-        public static int WeekDay(double t)
+        private static int WeekDay(double t)
         {
-            return (Day(t) + 4)%7;
+            var result = (Day(t) + 4) % 7;
+            return result >= 0 ? result : result + 7;
         }
 
-        public long LocalTza => (long) Engine.Options.TimeZone.BaseUtcOffset.TotalMilliseconds;
-
-        public double DaylightSavingTa(double t)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-local-time-zone-adjustment
+        /// </summary>
+        private double LocalTza(double t, bool isUtc)
         {
-            if (double.IsNaN(t))
-            {
-                return t;
-            }
-
             var year = YearFromTime(t);
             var timeInYear = t - TimeFromYear(year);
+            timeInYear = double.IsNaN(timeInYear) ? 0 : timeInYear;
 
-            if (double.IsInfinity(timeInYear) || double.IsNaN(timeInYear))
-            {
-                return 0;
-            }
-
-            if (year < 9999 && year > -9999 && year != 0)
+            if (year < 9999 && year >= 1)
             {
                 // in DateTimeOffset range so we can use it
             }
@@ -998,7 +1113,12 @@ namespace Jint.Native.Date
 
             var dateTime = new DateTime(year, 1, 1).AddMilliseconds(timeInYear);
 
-            return Engine.Options.TimeZone.IsDaylightSavingTime(dateTime) ? MsPerHour : 0;
+            if (isUtc)
+            {
+                return Engine.Options.TimeZone.GetUtcOffset(dateTime).TotalMilliseconds;
+            }
+
+            return Engine.Options.TimeZone.GetUtcOffset(dateTime).TotalMilliseconds;
         }
 
         private static DateTimeOffset ToLocalTime(DateTime t, TimeZoneInfo timeZone)
@@ -1011,22 +1131,25 @@ namespace Jint.Native.Date
             };
         }
 
-        public double LocalTime(double t)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-localtime
+        /// </summary>
+        private double LocalTime(double t)
         {
-            if (!IsFinite(t))
+            if (double.IsNaN(t))
             {
                 return double.NaN;
             }
 
-            return (long) (t + LocalTza + DaylightSavingTa((long) t));
+            return t + LocalTza(t, true);
         }
 
-        public double Utc(double t)
+        internal double Utc(double t)
         {
-            return t - LocalTza - DaylightSavingTa(t - LocalTza);
+            return t - LocalTza(t, false);
         }
 
-        public static int HourFromTime(double t)
+        private static int HourFromTime(double t)
         {
             var hours = System.Math.Floor(t / MsPerHour) % HoursPerDay;
 
@@ -1038,7 +1161,7 @@ namespace Jint.Native.Date
             return (int) hours;
         }
 
-        public static int MinFromTime(double t)
+        private static int MinFromTime(double t)
         {
             var minutes = System.Math.Floor(t / MsPerMinute) % MinutesPerHour;
 
@@ -1050,7 +1173,7 @@ namespace Jint.Native.Date
             return (int) minutes;
         }
 
-        public static int SecFromTime(double t)
+        private static int SecFromTime(double t)
         {
             var seconds = System.Math.Floor(t / MsPerSecond) % SecondsPerMinute;
 
@@ -1062,7 +1185,7 @@ namespace Jint.Native.Date
             return (int) seconds;
         }
 
-        public static int MsFromTime(double t)
+        private static int MsFromTime(double t)
         {
             var milli = t % MsPerSecond;
 
@@ -1074,7 +1197,7 @@ namespace Jint.Native.Date
             return (int) milli;
         }
 
-        public static double MakeTime(double hour, double min, double sec, double ms)
+        internal static double MakeTime(double hour, double min, double sec, double ms)
         {
             if (!AreFinite(hour, min, sec, ms))
             {
@@ -1090,7 +1213,7 @@ namespace Jint.Native.Date
             return t;
         }
 
-        public static double MakeDay(double year, double month, double date)
+        internal static double MakeDay(double year, double month, double date)
         {
             if ((year < MinYear || year > MaxYear) || month < MinMonth  || month > MaxMonth || !AreFinite(year, month, date))
             {
@@ -1132,7 +1255,7 @@ namespace Jint.Native.Date
             return dayFromYear - 1 + TypeConverter.ToInteger(date);
         }
 
-        public static double MakeDate(double day, double time)
+        internal static double MakeDate(double day, double time)
         {
             if (!AreFinite(day, time))
             {
@@ -1140,21 +1263,6 @@ namespace Jint.Native.Date
             }
 
             return day * MsPerDay + time;
-        }
-
-        public static double TimeClip(double time)
-        {
-            if (!IsFinite(time))
-            {
-                return double.NaN;
-            }
-
-            if (System.Math.Abs(time) > 8640000000000000)
-            {
-                return double.NaN;
-            }
-
-            return (long) time + 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1190,10 +1298,8 @@ namespace Jint.Native.Date
             const int kDaysIn100Years = 25 * kDaysIn4Years - 1;
             const int kDaysIn400Years = 4 * kDaysIn100Years + 1;
             const int kDays1970to2000 = 30 * 365 + 7;
-            const int kDaysOffset =
-                1000 * kDaysIn400Years + 5 * kDaysIn400Years - kDays1970to2000;
+            const int kDaysOffset = 1000 * kDaysIn400Years + 5 * kDaysIn400Years - kDays1970to2000;
             const int kYearsOffset = 400000;
-
 
             days += kDaysOffset;
             var year = 400 * (days / kDaysIn400Years) - kYearsOffset;
@@ -1253,6 +1359,73 @@ namespace Jint.Native.Date
             }
 
             return new Date((int) year, month, day);
+        }
+
+        private static readonly string[] _dayNames =
+        {
+            "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+        };
+
+        private static readonly string[] _monthNames =
+        {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+        };
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-datestring
+        /// </summary>
+        private static string DateString(double tv)
+        {
+            var weekday = _dayNames[WeekDay(tv)];
+            var month = _monthNames[MonthFromTime(tv)];
+
+            var dateFromTime = DateFromTime(tv);
+            var day = System.Math.Max(1, dateFromTime).ToString("00");
+            var yv = YearFromTime(tv);
+            var yearSign = yv < 0 ? "-" : "";
+            var year = System.Math.Abs(yv);
+            var paddedYear = year.ToString("0000");
+
+            return weekday + " " + month + " " + day + " " + yearSign + paddedYear;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-timestring
+        /// </summary>
+        private static string TimeString(double t)
+        {
+            var hour = HourFromTime(t).ToString("00");
+            var minute = MinFromTime(t).ToString("00");
+            var second = SecFromTime(t).ToString("00");
+
+            return hour + ":" + minute + ":" + second + " GMT";
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-timezoneestring
+        /// </summary>
+        private string TimeZoneString(double tv)
+        {
+            var offset = LocalTza(tv, true);
+            string offsetSign;
+            double absOffset;
+            if (offset >= 0)
+            {
+                offsetSign = "+";
+                absOffset = offset;
+            }
+            else
+            {
+                offsetSign = "-";
+                absOffset = -1 * offset;
+            }
+
+            var offsetMin = MinFromTime(absOffset).ToString("00");
+            var offsetHour = HourFromTime(absOffset).ToString("00");
+
+            var tzName = " (" + _engine.Options.TimeZone.StandardName + ")";
+
+            return offsetSign + offsetHour + offsetMin + tzName;
         }
 
         public override string ToString()

@@ -1,12 +1,30 @@
+using Jint.Native;
 using Jint.Native.Global;
 using Jint.Native.Object;
+using Jint.Native.Promise;
+using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
+using Jint.Runtime.Interop;
+using Jint.Runtime.Modules;
 
 namespace Jint.Runtime
 {
     public class Host
     {
-        protected Engine Engine { get; private set; }
+        private Engine? _engine;
+
+        protected Engine Engine
+        {
+            get
+            {
+                if (_engine is null)
+                {
+                    ExceptionHelper.ThrowInvalidOperationException("Initialize has not been called");
+                }
+                return _engine!;
+            }
+            private set => _engine = value;
+        }
 
         /// <summary>
         /// Initializes the host.
@@ -30,6 +48,7 @@ namespace Jint.Runtime
             var realm = CreateRealm();
 
             var newContext = new ExecutionContext(
+                scriptOrModule: null,
                 lexicalEnvironment: realm.GlobalEnv,
                 variableEnvironment: realm.GlobalEnv,
                 privateEnvironment: null,
@@ -70,7 +89,7 @@ namespace Jint.Runtime
             realmRec.GlobalEnv = globalEnv;
             realmRec.GlobalObject = globalObject;
 
-            Engine._realmInConstruction = null;
+            Engine._realmInConstruction = null!;
 
             return realmRec;
         }
@@ -87,10 +106,99 @@ namespace Jint.Runtime
         /// <summary>
         /// https://tc39.es/ecma262/#sec-hostensurecancompilestrings
         /// </summary>
-        /// <param name="callerRealm"></param>
-        /// <param name="evalRealm"></param>
         public virtual void EnsureCanCompileStrings(Realm callerRealm, Realm evalRealm)
         {
         }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-hostresolveimportedmodule
+        /// </summary>
+        internal virtual ModuleRecord ResolveImportedModule(IScriptOrModule? referencingScriptOrModule, string specifier)
+        {
+            return Engine.LoadModule(referencingScriptOrModule?.Location, specifier);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-hostimportmoduledynamically
+        /// </summary>
+        internal virtual void ImportModuleDynamically(IScriptOrModule? referencingModule, string specifier, PromiseCapability promiseCapability)
+        {
+            var promise = Engine.RegisterPromise();
+
+            try
+            {
+                // This should instead return the PromiseInstance returned by ModuleRecord.Evaluate (currently done in Engine.EvaluateModule), but until we have await this will do.
+                Engine.ImportModule(specifier, referencingModule?.Location);
+                promise.Resolve(JsValue.Undefined);
+            }
+            catch (JavaScriptException ex)
+            {
+                promise.Reject(ex.Error);
+            }
+
+            FinishDynamicImport(referencingModule, specifier, promiseCapability, (PromiseInstance) promise.Promise);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-finishdynamicimport
+        /// </summary>
+        internal virtual void FinishDynamicImport(IScriptOrModule? referencingModule, string specifier, PromiseCapability promiseCapability, PromiseInstance innerPromise)
+        {
+            var onFulfilled = new ClrFunctionInstance(Engine, "", (thisObj, args) =>
+            {
+                var moduleRecord = ResolveImportedModule(referencingModule, specifier);
+                try
+                {
+                    var ns = ModuleRecord.GetModuleNamespace(moduleRecord);
+                    promiseCapability.Resolve.Call(JsValue.Undefined, new JsValue[] { ns });
+                }
+                catch (JavaScriptException ex)
+                {
+                    promiseCapability.Reject.Call(JsValue.Undefined, new [] { ex.Error });
+                }
+                return JsValue.Undefined;
+            }, 0, PropertyFlag.Configurable);
+
+            var onRejected = new ClrFunctionInstance(Engine, "", (thisObj, args) =>
+            {
+                var error = args.At(0);
+                promiseCapability.Reject.Call(JsValue.Undefined, new [] { error });
+                return JsValue.Undefined;
+            }, 0, PropertyFlag.Configurable);
+
+            PromiseOperations.PerformPromiseThen(Engine, innerPromise, onFulfilled, onRejected, promiseCapability);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-hostgetimportmetaproperties
+        /// </summary>
+        public virtual List<KeyValuePair<JsValue, JsValue>> GetImportMetaProperties(ModuleRecord moduleRecord)
+        {
+            return new List<KeyValuePair<JsValue, JsValue>>();
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-hostfinalizeimportmeta
+        /// </summary>
+        public virtual void FinalizeImportMeta(ObjectInstance importMeta, ModuleRecord moduleRecord)
+        {
+        }
+
+        /// <summary>
+        /// https://tc39.es/proposal-shadowrealm/#sec-host-initialize-shadow-shadowrealm
+        /// </summary>
+        public virtual void InitializeShadowRealm(Realm realm)
+        {
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-hostmakejobcallback
+        /// </summary>
+        internal virtual JobCallback MakeJobCallBack(ICallable cleanupCallback)
+        {
+            return new JobCallback(cleanupCallback, null);
+        }
     }
 }
+
+internal sealed record JobCallback(ICallable Callback, object? HostDefined);

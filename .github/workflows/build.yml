@@ -6,7 +6,7 @@ on:
     branches: [ main ]
     paths-ignore:
     - 'doc/**'
-    - '*.md'
+    - '**.md'
 
 jobs:
   build:
@@ -20,16 +20,11 @@ jobs:
     - name: Checkout source code
       uses: actions/checkout@v2
 
-    - name: Setup .NET 6.0
-      uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: 6.0.*
-
     - name: Test
-      run: dotnet test --configuration Release
+      run: dotnet test --configuration Release --logger GitHubActions
 
     - name: Pack with dotnet
-      run: dotnet pack --output artifacts --configuration Release -p:PackageVersion=$GITHUB_RUN_ID
+      run: dotnet pack --output artifacts --configuration Release -p:PackageVersion=3.0.0-preview-$GITHUB_RUN_NUMBER
 
     - name: Push with dotnet
       run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.MYGET_API_KEY }} --skip-duplicate --source https://www.myget.org/F/jint/api/v2/package

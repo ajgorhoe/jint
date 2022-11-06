@@ -79,7 +79,7 @@ namespace Jint.Native.DataView
                 ExceptionHelper.ThrowTypeError(_realm, "Method get DataView.prototype.buffer called on incompatible receiver " + thisObj);
             }
 
-            return o._viewedArrayBuffer;
+            return o._viewedArrayBuffer!;
         }
 
         /// <summary>
@@ -93,7 +93,7 @@ namespace Jint.Native.DataView
                 ExceptionHelper.ThrowTypeError(_realm, "Method get DataView.prototype.byteLength called on incompatible receiver " + thisObj);
             }
 
-            var buffer = o._viewedArrayBuffer;
+            var buffer = o._viewedArrayBuffer!;
             buffer.AssertNotDetached();
 
             return JsNumber.Create(o._byteLength);
@@ -110,7 +110,7 @@ namespace Jint.Native.DataView
                 ExceptionHelper.ThrowTypeError(_realm, "Method get DataView.prototype.byteOffset called on incompatible receiver " + thisObj);
             }
 
-            var buffer = o._viewedArrayBuffer;
+            var buffer = o._viewedArrayBuffer!;
             buffer.AssertNotDetached();
 
             return JsNumber.Create(o._byteOffset);
@@ -233,7 +233,7 @@ namespace Jint.Native.DataView
 
             var getIndex = (int) TypeConverter.ToIndex(_realm, requestIndex);
             var isLittleEndianBoolean = TypeConverter.ToBoolean(isLittleEndian);
-            var buffer = dataView._viewedArrayBuffer;
+            var buffer = dataView._viewedArrayBuffer!;
 
             buffer.AssertNotDetached();
 
@@ -246,7 +246,7 @@ namespace Jint.Native.DataView
             }
 
             var bufferIndex = (int) (getIndex + viewOffset);
-            return buffer.GetValueFromBuffer(bufferIndex, type, false, ArrayBufferOrder.Unordered, isLittleEndianBoolean);
+            return buffer.GetValueFromBuffer(bufferIndex, type, false, ArrayBufferOrder.Unordered, isLittleEndianBoolean).ToJsValue();
         }
 
         /// <summary>
@@ -267,12 +267,10 @@ namespace Jint.Native.DataView
 
             var getIndex = TypeConverter.ToIndex(_realm, requestIndex);
 
-            double numberValue;
+            TypedArrayValue numberValue;
             if (type.IsBigIntElementType())
             {
-                // let numberValue be ? ToBigInt(value).
-                ExceptionHelper.ThrowNotImplementedException("BigInt not implemented");
-                return Undefined;
+                numberValue = TypeConverter.ToBigInt(value);
             }
             else
             {
@@ -280,7 +278,7 @@ namespace Jint.Native.DataView
             }
 
             var isLittleEndianBoolean = TypeConverter.ToBoolean(isLittleEndian);
-            var buffer = dataView._viewedArrayBuffer;
+            var buffer = dataView._viewedArrayBuffer!;
             buffer.AssertNotDetached();
 
             var viewOffset = dataView._byteOffset;

@@ -1,4 +1,3 @@
-﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Esprima;
 using Esprima.Ast;
@@ -9,7 +8,7 @@ namespace Jint.Runtime.Interpreter.Statements
 {
     internal abstract class JintStatement<T> : JintStatement where T : Statement
     {
-        internal readonly T _statement;
+        internal new readonly T _statement;
 
         protected JintStatement(T statement) : base(statement)
         {
@@ -19,7 +18,7 @@ namespace Jint.Runtime.Interpreter.Statements
 
     internal abstract class JintStatement
     {
-        private readonly Statement _statement;
+        internal readonly Statement _statement;
         private bool _initialized;
 
         protected JintStatement(Statement statement)
@@ -32,8 +31,8 @@ namespace Jint.Runtime.Interpreter.Statements
         {
             if (_statement.Type != Nodes.BlockStatement)
             {
-                context.LastSyntaxNode = _statement;
-                context.Engine.RunBeforeExecuteStatementChecks(_statement);
+                context.PrepareFor(_statement);
+                context.RunBeforeExecuteStatementChecks(_statement);
             }
 
             if (!_initialized)
@@ -44,17 +43,17 @@ namespace Jint.Runtime.Interpreter.Statements
 
             if (context.ResumedCompletion.IsAbrupt() && !SupportsResume)
             {
-                return NormalCompletion(JsValue.Undefined);
+                return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
             }
 
             return ExecuteInternal(context);
         }
 
-        protected virtual bool SupportsResume => false;
+        internal virtual bool SupportsResume => false;
 
         protected abstract Completion ExecuteInternal(EvaluationContext context);
 
-        public Location Location => _statement.Location;
+        public ref readonly Location Location => ref _statement.Location;
 
         /// <summary>
         /// Opportunity to build one-time structures and caching based on lexical context.
@@ -66,7 +65,7 @@ namespace Jint.Runtime.Interpreter.Statements
 
         protected internal static JintStatement Build(Statement statement)
         {
-            JintStatement result = statement.Type switch
+            JintStatement? result = statement.Type switch
             {
                 Nodes.BlockStatement => new JintBlockStatement((BlockStatement) statement),
                 Nodes.ReturnStatement => new JintReturnStatement((ReturnStatement) statement),
@@ -89,6 +88,10 @@ namespace Jint.Runtime.Interpreter.Statements
                 Nodes.WithStatement => new JintWithStatement((WithStatement) statement),
                 Nodes.DebuggerStatement => new JintDebuggerStatement((DebuggerStatement) statement),
                 Nodes.ClassDeclaration => new JintClassDeclarationStatement((ClassDeclaration) statement),
+                Nodes.ExportNamedDeclaration => new JintExportNamedDeclaration((ExportNamedDeclaration) statement),
+                Nodes.ExportAllDeclaration => new JintExportAllDeclaration((ExportAllDeclaration) statement),
+                Nodes.ExportDefaultDeclaration => new JintExportDefaultDeclaration((ExportDefaultDeclaration) statement),
+                Nodes.ImportDeclaration => new JintImportDeclaration((ImportDeclaration) statement),
                 _ => null
             };
 
@@ -107,24 +110,11 @@ namespace Jint.Runtime.Interpreter.Statements
                 var jsValue = JintLiteralExpression.ConvertToJsValue(l);
                 if (jsValue is not null)
                 {
-                    return new Completion(CompletionType.Return, jsValue, null, rs.Location);
+                    return new Completion(CompletionType.Return, jsValue, rs);
                 }
             }
 
             return null;
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-normalcompletion
-        /// </summary>
-        /// <remarks>
-        /// We use custom type that is translated to Completion later on.
-        /// </remarks>
-        [DebuggerStepThrough]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected Completion NormalCompletion(JsValue value)
-        {
-            return new Completion(CompletionType.Normal, value, _statement.Location);
         }
     }
 }

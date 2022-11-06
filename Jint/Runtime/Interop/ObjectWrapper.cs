@@ -1,6 +1,4 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using Jint.Native;
@@ -52,6 +50,13 @@ namespace Jint.Runtime.Interop
                     // can try utilize fast path
                     var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, Target.GetType(), member);
 
+                    if (ReferenceEquals(accessor, ConstantValueAccessor.NullAccessor))
+                    {
+                        // there's no such property, but we can allow extending by calling base
+                        // which will add properties, this allows for example JS class to extend a CLR type
+                        return base.Set(property, value, receiver);
+                    }
+
                     // CanPut logic
                     if (!accessor.Writable || !_engine.Options.Interop.AllowWrite)
                     {
@@ -61,6 +66,16 @@ namespace Jint.Runtime.Interop
                     accessor.SetValue(_engine, Target, value);
                     return true;
                 }
+            }
+            else if (property is JsSymbol jsSymbol)
+            {
+                // symbol addition will never hit any known CLR object properties, so if write is allowed, allow writing symbols too
+                if (_engine.Options.Interop.AllowWrite)
+                {
+                    return base.Set(jsSymbol, value, receiver);
+                }
+
+                return false;
             }
 
             return SetSlow(property, value);
@@ -74,12 +89,6 @@ namespace Jint.Runtime.Interop
             }
 
             var ownDesc = GetOwnProperty(property);
-
-            if (ownDesc == null)
-            {
-                return false;
-            }
-
             ownDesc.Value = value;
             return true;
         }
@@ -89,18 +98,20 @@ namespace Jint.Runtime.Interop
             return Target;
         }
 
+        public override void RemoveOwnProperty(JsValue property)
+        {
+            if (_engine.Options.Interop.AllowWrite && property is JsString jsString)
+            {
+                _typeDescriptor.Remove(Target, jsString.ToString());
+            }
+        }
+
         public override JsValue Get(JsValue property, JsValue receiver)
         {
             if (property.IsInteger() && Target is IList list)
             {
                 var index = (int) ((JsNumber) property)._value;
                 return (uint) index < list.Count ? FromObject(_engine, list[index]) : Undefined;
-            }
-
-            if (property.IsSymbol() && property != GlobalSymbolRegistry.Iterator)
-            {
-                // wrapped objects cannot have symbol properties
-                return Undefined;
             }
 
             return base.Get(property, receiver);
@@ -121,10 +132,7 @@ namespace Jint.Runtime.Interop
 
         private IEnumerable<JsValue> EnumerateOwnPropertyKeys(Types types)
         {
-            var basePropertyKeys = base.GetOwnPropertyKeys(types);
             // prefer object order, add possible other properties after
-            var processed = basePropertyKeys.Count > 0 ? new HashSet<JsValue>() : null;
-
             var includeStrings = (types & Types.String) != 0;
             if (includeStrings && _typeDescriptor.IsStringKeyedGenericDictionary) // expando object for instance
             {
@@ -132,7 +140,6 @@ namespace Jint.Runtime.Interop
                 foreach (var key in keys)
                 {
                     var jsString = JsString.Create(key);
-                    processed?.Add(jsString);
                     yield return jsString;
                 }
             }
@@ -141,12 +148,11 @@ namespace Jint.Runtime.Interop
                 // we take values exposed as dictionary keys only
                 foreach (var key in dictionary.Keys)
                 {
-                    object stringKey = key as string;
+                    object? stringKey = key as string;
                     if (stringKey is not null
                         || _engine.ClrTypeConverter.TryConvert(key, typeof(string), CultureInfo.InvariantCulture, out stringKey))
                     {
-                        var jsString = JsString.Create((string) stringKey);
-                        processed?.Add(jsString);
+                        var jsString = JsString.Create((string) stringKey!);
                         yield return jsString;
                     }
                 }
@@ -161,7 +167,6 @@ namespace Jint.Runtime.Interop
                     if (indexParameters.Length == 0)
                     {
                         var jsString = JsString.Create(p.Name);
-                        processed?.Add(jsString);
                         yield return jsString;
                     }
                 }
@@ -169,21 +174,7 @@ namespace Jint.Runtime.Interop
                 foreach (var f in type.GetFields(BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public))
                 {
                     var jsString = JsString.Create(f.Name);
-                    processed?.Add(jsString);
                     yield return jsString;
-                }
-            }
-
-            if (processed != null)
-            {
-                // we have base keys
-                for (var i = 0; i < basePropertyKeys.Count; i++)
-                {
-                    var key = basePropertyKeys[i];
-                    if (processed.Add(key))
-                    {
-                        yield return key;
-                    }
                 }
             }
         }
@@ -212,11 +203,20 @@ namespace Jint.Runtime.Interop
 
             var member = property.ToString();
 
-            if (_typeDescriptor.IsStringKeyedGenericDictionary)
+            // if type is dictionary, we cannot enumerate anything other than keys
+            // and we cannot store accessors as dictionary can change dynamically
+
+            var isDictionary = _typeDescriptor.IsStringKeyedGenericDictionary;
+            if (isDictionary)
             {
                 if (_typeDescriptor.TryGetValue(Target, member, out var value))
                 {
-                    return new PropertyDescriptor(FromObject(_engine, value), PropertyFlag.OnlyEnumerable);
+                    var flags = PropertyFlag.Enumerable;
+                    if (_engine.Options.Interop.AllowWrite)
+                    {
+                        flags |= PropertyFlag.Configurable;
+                    }
+                    return new PropertyDescriptor(FromObject(_engine, value), flags);
                 }
             }
 
@@ -227,8 +227,12 @@ namespace Jint.Runtime.Interop
             }
 
             var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, Target.GetType(), member);
-            var descriptor = accessor.CreatePropertyDescriptor(_engine, Target);
-            SetProperty(member, descriptor);
+            var descriptor = accessor.CreatePropertyDescriptor(_engine, Target, enumerable: !isDictionary);
+            if (!isDictionary && !ReferenceEquals(descriptor, PropertyDescriptor.Undefined))
+            {
+                // cache the accessor for faster subsequent accesses
+                SetProperty(member, descriptor);
+            }
             return descriptor;
         }
 
@@ -236,7 +240,7 @@ namespace Jint.Runtime.Interop
         public static PropertyDescriptor GetPropertyDescriptor(Engine engine, object target, MemberInfo member)
         {
             // fast path which uses slow search if not found for some reason
-            ReflectionAccessor Factory()
+            ReflectionAccessor? Factory()
             {
                 return member switch
                 {
@@ -261,20 +265,25 @@ namespace Jint.Runtime.Interop
         private static JsValue GetLength(JsValue thisObj, JsValue[] arguments)
         {
             var wrapper = (ObjectWrapper) thisObj;
-            return JsNumber.Create((int) wrapper._typeDescriptor.LengthProperty.GetValue(wrapper.Target));
+            return JsNumber.Create((int) (wrapper._typeDescriptor.LengthProperty?.GetValue(wrapper.Target) ?? 0));
         }
 
-        public override bool Equals(JsValue obj)
+        internal override ulong GetSmallestIndex(ulong length)
+        {
+            return Target is ICollection ? 0 : base.GetSmallestIndex(length);
+        }
+
+        public override bool Equals(JsValue? obj)
         {
             return Equals(obj as ObjectWrapper);
         }
 
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj)
         {
             return Equals(obj as ObjectWrapper);
         }
 
-        public bool Equals(ObjectWrapper other)
+        public bool Equals(ObjectWrapper? other)
         {
             if (ReferenceEquals(null, other))
             {
@@ -328,6 +337,12 @@ namespace Jint.Runtime.Interop
             public EnumerableIterator(Engine engine, IEnumerable target) : base(engine)
             {
                 _enumerator = target.GetEnumerator();
+            }
+
+            public override void Close(CompletionType completion)
+            {
+               (_enumerator as IDisposable)?.Dispose();
+                base.Close(completion);
             }
 
             public override bool TryIteratorStep(out ObjectInstance nextItem)

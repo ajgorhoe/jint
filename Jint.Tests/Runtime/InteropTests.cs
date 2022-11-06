@@ -1,18 +1,17 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
+﻿using System.Collections;
 using System.Globalization;
-using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Jint.Native;
 using Jint.Native.Object;
+using Jint.Native.Symbol;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
 using Jint.Tests.Runtime.Converters;
 using Jint.Tests.Runtime.Domain;
+using Jint.Tests.Runtime.TestClasses;
 using MongoDB.Bson;
 using Shapes;
-using Xunit;
 
 namespace Jint.Tests.Runtime
 {
@@ -513,12 +512,9 @@ namespace Jint.Tests.Runtime
             list.Add("Goofy");
 
             _engine.SetValue("list", list);
+            _engine.Evaluate("list[1] = 'Donald Duck';");
 
-            RunTest(@"
-                list[1] = 'Donald Duck';
-                assert(list[1] === 'Donald Duck');
-            ");
-
+            Assert.Equal("Donald Duck", _engine.Evaluate("list[1]").AsString());
             Assert.Equal("Mickey Mouse", list[0]);
             Assert.Equal("Donald Duck", list[1]);
         }
@@ -787,6 +783,67 @@ namespace Jint.Tests.Runtime
             ");
         }
 
+        [Fact]
+        public void JavaScriptClassCanExtendClrType()
+        {
+            _engine.SetValue("TestClass", TypeReference.CreateTypeReference<TestClass>(_engine));
+
+            _engine.Execute("class ExtendedType extends TestClass { constructor() { super(); this.a = 1; } get aProp() { return 'A'; } }");
+            _engine.Execute("class MyExtendedType extends ExtendedType { constructor() { super(); this.b = 2; } get bProp() { return 'B'; } }");
+            _engine.Evaluate("let obj = new MyExtendedType();");
+
+            _engine.Evaluate("obj.setString('Hello World!');");
+
+            Assert.Equal("Hello World!", _engine.Evaluate("obj.string"));
+            Assert.Equal(1, _engine.Evaluate("obj.a"));
+            Assert.Equal(2, _engine.Evaluate("obj.b"));
+
+            Assert.Equal("A", _engine.Evaluate("obj.aProp"));
+            Assert.Equal("B", _engine.Evaluate("obj.bProp"));
+
+            // TODO we should have a special prototype based on wrapped type so we could differentiate between own and type properties
+            // Assert.Equal("[\"a\"]", _engine.Evaluate("JSON.stringify(Object.getOwnPropertyNames(new ExtendedType()))"));
+            // Assert.Equal("[\"a\",\"b\"]", _engine.Evaluate("JSON.stringify(Object.getOwnPropertyNames(new MyExtendedType()))"));
+        }
+
+        [Fact]
+        public void ShouldAllowMethodsOnClrExtendedTypes()
+        {
+            _engine.SetValue("ClrBaseType", TypeReference.CreateTypeReference<TestClass>(_engine));
+            _engine.Evaluate(@"
+                class JsBaseType {}
+                class ExtendsFromJs extends JsBaseType {
+                    constructor() {
+                        super();
+                        this.a = 1;
+                    }
+
+                    getA() {
+                        return this.a;
+                    }
+                }
+
+                class ExtendsFromClr extends ClrBaseType {
+                    constructor() {
+                        super();
+                        this.a = 1;
+                    }
+
+                    getA() {
+                        return this.a;
+                    }
+                }
+            ");
+
+            var extendsFromJs = _engine.Construct("ExtendsFromJs");
+            Assert.Equal(1, _engine.Evaluate("new ExtendsFromJs().getA();"));
+            Assert.NotEqual(JsValue.Undefined, extendsFromJs.Get("getA"));
+
+            var extendsFromClr = _engine.Construct("ExtendsFromClr");
+            Assert.Equal(1, _engine.Evaluate("new ExtendsFromClr().getA();"));
+            Assert.NotEqual(JsValue.Undefined, extendsFromClr.Get("getA"));
+        }
+
         private struct TestStruct
         {
             public int Value;
@@ -902,6 +959,51 @@ namespace Jint.Tests.Runtime
 
             var name = e.Evaluate("o.values.filter(x => x.age == 12)[0].name").ToString();
             Assert.Equal("John", name);
+        }
+
+
+        [Fact]
+        public void CanSetIsConcatSpreadableForArrays()
+        {
+            var engine = new Engine(opt =>
+            {
+                opt.SetWrapObjectHandler((eng, obj) =>
+                {
+                    var wrapper = new ObjectWrapper(eng, obj);
+                    if (wrapper.IsArrayLike)
+                    {
+                        wrapper.SetPrototypeOf(eng.Realm.Intrinsics.Array.PrototypeObject);
+                        wrapper.Set(GlobalSymbolRegistry.IsConcatSpreadable, true);
+                    }
+                    return wrapper;
+                });
+            });
+
+            engine
+                .SetValue("list1", new List<string> { "A", "B", "C" })
+                .SetValue("list2", new List<string> { "D", "E", "F" })
+                .Execute("var array1 = ['A', 'B', 'C'];")
+                .Execute("var array2 = ['D', 'E', 'F'];");
+
+            Assert.True(engine.Evaluate("list1[Symbol.isConcatSpreadable] = true; list1[Symbol.isConcatSpreadable];").AsBoolean());
+            Assert.True(engine.Evaluate("list2[Symbol.isConcatSpreadable] = true; list2[Symbol.isConcatSpreadable];").AsBoolean());
+
+            Assert.Equal("[\"A\",\"B\",\"C\"]", engine.Evaluate("JSON.stringify(array1);"));
+            Assert.Equal("[\"D\",\"E\",\"F\"]", engine.Evaluate("JSON.stringify(array2);"));
+            Assert.Equal("[\"A\",\"B\",\"C\"]", engine.Evaluate("JSON.stringify(list1);"));
+            Assert.Equal("[\"D\",\"E\",\"F\"]", engine.Evaluate("JSON.stringify(list2);"));
+
+            const string Concatenated = "[\"A\",\"B\",\"C\",\"D\",\"E\",\"F\"]";
+            Assert.Equal(Concatenated, engine.Evaluate("JSON.stringify(array1.concat(array2));"));
+            Assert.Equal(Concatenated, engine.Evaluate("JSON.stringify(array1.concat(list2));"));
+            Assert.Equal(Concatenated, engine.Evaluate("JSON.stringify(list1.concat(array2));"));
+            Assert.Equal(Concatenated, engine.Evaluate("JSON.stringify(list1.concat(list2));"));
+
+            Assert.False(engine.Evaluate("list1[Symbol.isConcatSpreadable] = false; list1[Symbol.isConcatSpreadable];").AsBoolean());
+            Assert.False(engine.Evaluate("list2[Symbol.isConcatSpreadable] = false; list2[Symbol.isConcatSpreadable];").AsBoolean());
+
+            Assert.Equal("[[\"A\",\"B\",\"C\"]]", engine.Evaluate("JSON.stringify([].concat(list1));"));
+            Assert.Equal("[[\"A\",\"B\",\"C\"],[\"D\",\"E\",\"F\"]]", engine.Evaluate("JSON.stringify(list1.concat(list2));"));
         }
 
         [Fact]
@@ -1235,14 +1337,22 @@ namespace Jint.Tests.Runtime
             _engine.SetValue("collection", collection);
 
             RunTest(@"
-                var eventAction;
-                collection.add_CollectionChanged(function(sender, eventArgs) { eventAction = eventArgs.Action; } );
+                var callCount = 0;
+                var handler = function(sender, eventArgs) { callCount++; } ;
+                collection.add_CollectionChanged(handler);
                 collection.Add('test');
+                collection.remove_CollectionChanged(handler);
+                collection.Add('test');
+
+                var json = JSON.stringify(Object.keys(handler));
             ");
 
-            var eventAction = _engine.GetValue("eventAction").AsNumber();
-            Assert.True(eventAction == 0);
-            Assert.True(collection.Count == 1);
+            var callCount = (int) _engine.GetValue("callCount").AsNumber();
+            Assert.Equal(1, callCount);
+            Assert.Equal(2, collection.Count);
+
+            // make sure our delegate holder is hidden
+            Assert.Equal("[]", _engine.Evaluate("json"));
         }
 
         [Fact]
@@ -2464,6 +2574,15 @@ namespace Jint.Tests.Runtime
             Assert.Equal(1, engine.Evaluate("E.b;").AsNumber());
         }
 
+        [Fact]
+        public void IntegerAndFloatInFunctionOverloads()
+        {
+            var engine = new Engine(options => options.AllowClr(GetType().Assembly));
+            engine.SetValue("a", new OverLoading());
+            Assert.Equal("int-val", engine.Evaluate("a.testFunc(123);").AsString());
+            Assert.Equal("float-val", engine.Evaluate("a.testFunc(12.3);").AsString());
+        }
+
         public class TestItem
         {
             public double Cost { get; set; }
@@ -2573,11 +2692,14 @@ namespace Jint.Tests.Runtime
             engine.Realm.GlobalObject.FastAddProperty("global", engine.Realm.GlobalObject, true, true, true);
             engine.Realm.GlobalObject.FastAddProperty("test", new DelegateWrapper(engine, (Action<string, object>) Test), true, true, true);
 
-            var ex = Assert.Throws<JavaScriptException>(() => engine.Realm.GlobalObject.ToObject());
-            Assert.Equal("Cyclic reference detected.", ex.Message);
+            {
+                var ex = Assert.Throws<JavaScriptException>(() => engine.Realm.GlobalObject.ToObject());
+                Assert.Equal("Cyclic reference detected.", ex.Message);
+            }
 
-            ex = Assert.Throws<JavaScriptException>(() =>
-                engine.Execute(@"
+            {
+                var ex = Assert.Throws<JavaScriptException>(() =>
+                    engine.Execute(@"
                     var demo={};
                     demo.value=1;
                     test('Test 1', demo.value===1);
@@ -2585,10 +2707,10 @@ namespace Jint.Tests.Runtime
                     demo.demo=demo;
                     test('Test 3', demo);
                     test('Test 4', global);"
-                )
-            );
-
-            Assert.Equal("Cyclic reference detected.", ex.Message);
+                    )
+                );
+                Assert.Equal("Cyclic reference detected.", ex.Message);
+            }
         }
 
         [Fact]
@@ -2672,12 +2794,10 @@ namespace Jint.Tests.Runtime
             engine.Evaluate("var f = () => true;");
 
             var result = engine.GetValue("f");
-            Assert.True(result.IsCallable());
+            Assert.True(result.IsCallable);
 
-            var callable = result.AsCallable();
-            Assert.True(callable.Call(JsValue.Undefined, Array.Empty<JsValue>()).AsBoolean());
-
-            Assert.True(callable.Call().AsBoolean());
+            Assert.True(result.Call(Array.Empty<JsValue>()).AsBoolean());
+            Assert.True(result.Call().AsBoolean());
         }
 
         [Fact]
@@ -2732,6 +2852,425 @@ namespace Jint.Tests.Runtime
             engine.SetValue("a", new Person());
             var ex = Assert.Throws<JavaScriptException>(() => engine.Execute("a.age = \"It won't work, but it's normal\""));
             Assert.Equal("Input string was not in a correct format.", ex.Message);
+        }
+
+        [Fact]
+        public void ShouldLetNotSupportedExceptionBubble()
+        {
+            _engine.SetValue("profile", new Profile());
+            var ex = Assert.Throws<NotSupportedException>(() => _engine.Evaluate("profile.AnyProperty"));
+            Assert.Equal("NOT SUPPORTED", ex.Message);
+        }
+
+        [Fact]
+        public void ShouldBeAbleToUseConvertibleStructAsMethodParameter()
+        {
+            _engine.SetValue("test", new DiscordTestClass());
+            _engine.SetValue("id", new DiscordId("12345"));
+
+            Assert.Equal("12345", _engine.Evaluate("String(id)").AsString());
+            Assert.Equal("12345", _engine.Evaluate("test.echo('12345')").AsString());
+            Assert.Equal("12345", _engine.Evaluate("test.create(12345)").AsString());
+        }
+
+        [Fact]
+        public void ShouldGetIteratorForListAndDictionary()
+        {
+            const string Script = @"
+                var it = collection[Symbol.iterator]();
+                var result = it.next();
+                var str = """";
+                while (!result.done) {
+                    str += result.value;
+                    result = it.next();
+                }
+                return str;";
+
+            _engine.SetValue("collection", new List<string> { "a", "b", "c" });
+            Assert.Equal("abc", _engine.Evaluate(Script));
+
+            _engine.SetValue("collection", new Dictionary<string, object> { { "a", 1 }, { "b", 2 }, { "c", 3 } });
+            Assert.Equal("a,1b,2c,3", _engine.Evaluate(Script));
+        }
+
+        [Fact]
+        public void ShouldNotIntroduceNewPropertiesWhenTraversing()
+        {
+            _engine.SetValue("x", new Dictionary<string, int> { { "First", 1 }, { "Second", 2 } });
+
+            Assert.Equal("[\"First\",\"Second\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            Assert.Equal("x['First']: 1", _engine.Evaluate("\"x['First']: \" + x['First']"));
+            Assert.Equal("[\"First\",\"Second\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            Assert.Equal("x['Third']: undefined", _engine.Evaluate("\"x['Third']: \" + x['Third']"));
+            Assert.Equal("[\"First\",\"Second\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            Assert.Equal(JsValue.Undefined, _engine.Evaluate("x.length"));
+            Assert.Equal("[\"First\",\"Second\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            Assert.Equal(2, _engine.Evaluate("x.Count").AsNumber());
+            Assert.Equal("[\"First\",\"Second\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            _engine.Evaluate("x.Clear();");
+
+            Assert.Equal("[]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            _engine.Evaluate("x['Fourth'] = 4;");
+            Assert.Equal("[\"Fourth\"]", _engine.Evaluate("JSON.stringify(Object.keys(x))"));
+
+            Assert.False(_engine.Evaluate("Object.prototype.hasOwnProperty.call(x, 'Third')").AsBoolean());
+        }
+
+        [Fact]
+        public void CanConfigureCustomObjectTypeForJsToClrConversion()
+        {
+            var engine = new Engine(options =>
+            {
+                options.Interop.CreateClrObject = oi => new Dictionary<string, object>((int) oi.Length);
+            });
+
+            object capture = null;
+            var callback = (object value) => capture = value;
+            engine.SetValue("callback", callback);
+            engine.Evaluate("callback(({'a': 'b'}));");
+
+            Assert.IsType<Dictionary<string, object>>(capture);
+            var dictionary = (Dictionary<string, object>) capture;
+            Assert.Equal("b", dictionary["a"]);
+        }
+
+        [Fact]
+        public void ShouldScoreDoubleToDoubleParameterMatchHigherThanDoubleToFloat()
+        {
+            var engine = new Engine();
+            var mathTypeReference = TypeReference.CreateTypeReference(engine, typeof(Math));
+
+            engine.SetValue("Math2", mathTypeReference);
+            var result = engine.Evaluate("Math2.Max(5.37, 5.56)").AsNumber();
+
+            Assert.Equal(5.56d, result);
+        }
+
+        [Fact]
+        public void ArrayPrototypeIndexOfWithInteropList()
+        {
+            var engine = new Jint.Engine();
+
+            engine.SetValue("list", new List<string> { "A", "B", "C" });
+
+            Assert.Equal(1, engine.Evaluate("list.indexOf('B')"));
+            Assert.Equal(1, engine.Evaluate("list.lastIndexOf('B')"));
+
+            Assert.Equal(1, engine.Evaluate("Array.prototype.indexOf.call(list, 'B')"));
+            Assert.Equal(1, engine.Evaluate("Array.prototype.lastIndexOf.call(list, 'B')"));
+        }
+
+        [Fact]
+        public void ShouldBeJavaScriptException()
+        {
+            var engine = new Engine(cfg => cfg.AllowClr().AllowOperatorOverloading().CatchClrExceptions());
+            engine.SetValue("Dimensional", typeof(Dimensional));
+
+            engine.Execute(@"	
+				function Eval(param0, param1)
+				{ 
+					var result = param0 + param1;
+					return result;
+				}");
+            // checking working custom type
+            Assert.Equal(new Dimensional("kg", 90), (new Dimensional("kg", 30) + new Dimensional("kg", 60)));
+            Assert.Equal(new Dimensional("kg", 90), engine.Invoke("Eval", new object[] { new Dimensional("kg", 30), new Dimensional("kg", 60) }).ToObject());
+            Assert.Throws<InvalidOperationException>(() => new Dimensional("kg", 30) + new Dimensional("piece", 70));
+
+            // checking throwing exception in override operator
+            string errorMsg = string.Empty;
+            errorMsg = Assert.Throws<JavaScriptException>(() => engine.Invoke("Eval", new object[] { new Dimensional("kg", 30), new Dimensional("piece", 70) })).Message;
+            Assert.Equal("Dimensionals with different measure types are non-summable", errorMsg);
+        }
+
+        private class Profile
+        {
+            public int AnyProperty => throw new NotSupportedException("NOT SUPPORTED");
+        }
+
+        [Fact]
+        public void GenericParameterResolutionShouldWorkWithNulls()
+        {
+            var result = new Engine()
+                .SetValue("JintCommon", new JintCommon())
+                .Evaluate("JintCommon.sum(1, null)")
+                .AsNumber();
+
+            Assert.Equal(2, result);
+        }
+
+        public class JintCommon
+        {
+            public int Sum(int a, int? b) => a + b.GetValueOrDefault(1);
+        }
+
+        private delegate void ParamsTestDelegate(params Action[] callbacks);
+
+        [Fact]
+        public void CanUseParamsActions()
+        {
+            var engine = new Engine();
+            engine.SetValue("print", new Action<string>(_ => { }));
+            engine.SetValue("callAll", new DelegateWrapper(engine, new ParamsTestDelegate(ParamsTest)));
+
+            engine.Execute(@"
+                callAll(
+                    function() { print('a'); },
+                    function() { print('b'); },
+                    function() { print('c'); }
+                );
+            ");
+        }
+
+        private static void ParamsTest(params Action[] callbacks)
+        {
+            foreach (var callback in callbacks)
+            {
+                callback.Invoke();
+            }
+        }
+
+        [Fact]
+        public void ObjectWrapperIdentityIsMaintained()
+        {
+            // run in separate method so stack won't keep reference
+            var reference = RunWeakReferenceTest();
+
+            GC.Collect();
+
+            // make sure no dangling reference is left
+            Assert.False(reference.IsAlive);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static WeakReference RunWeakReferenceTest()
+        {
+            var o = new object();
+
+            var engine = new Engine()
+                .SetValue("o", o);
+
+            var wrapper1 = (ObjectWrapper) engine.GetValue("o");
+            var reference = new WeakReference(wrapper1);
+
+            Assert.Same(wrapper1, engine.GetValue("o"));
+            Assert.Same(o, wrapper1.Target);
+
+            // reset
+            engine.Realm.GlobalObject.RemoveOwnProperty("o");
+            return reference;
+        }
+
+        [Fact]
+        public void TypeReferenceShouldGetIntermediaryPrototype()
+        {
+            var engine = new Engine();
+            engine.SetValue("Person", TypeReference.CreateTypeReference<Person>(engine));
+
+            var calls = new List<string>();
+            engine.SetValue("log", new Action<string>(calls.Add));
+
+            engine.Execute("Person.prototype.__defineGetter__('bar', function() { log('called'); return 5 });");
+            engine.Execute("var instance = new Person();");
+            engine.Execute("log(instance.bar)");
+
+            engine.Execute("var z = {};");
+            engine.Execute("z['bar'] = 20;");
+            engine.Execute("log(z['bar']);");
+
+            Assert.Equal("called#5#20", string.Join("#", calls));
+        }
+
+        [Fact]
+        public void CanUseClrFunction()
+        {
+            var engine = new Engine();
+            engine.SetValue("fn", new ClrFunctionInstance(engine, "fn", (_, args) => (JsValue) (args[0].AsInteger() + 1)));
+
+            var result = engine.Evaluate("fn(1)");
+
+            Assert.Equal(2, result);
+        }
+
+        [Fact]
+        public void ShouldAllowClrExceptionsThrough()
+        {
+            var engine = new Engine(opts => opts.CatchClrExceptions(exc => false));
+            engine.SetValue("fn", new ClrFunctionInstance(engine, "fn", (_, _) => throw new InvalidOperationException("This is a C# error")));
+            const string Source = @"
+function wrap() {
+  fn();
+}
+wrap();
+";
+
+            Assert.Throws<InvalidOperationException>(() => engine.Execute(Source));
+        }
+
+        [Fact]
+        public void ShouldConvertClrExceptionsToErrors()
+        {
+            var engine = new Engine(opts => opts.CatchClrExceptions(exc => exc is InvalidOperationException));
+            engine.SetValue("fn", new ClrFunctionInstance(engine, "fn", (_, _) => throw new InvalidOperationException("This is a C# error")));
+            const string Source = @"
+function wrap() {
+  fn();
+}
+wrap();
+";
+
+            var exc = Assert.Throws<JavaScriptException>(() => engine.Execute(Source));
+            Assert.Equal(exc.Message, "This is a C# error");
+        }
+
+        [Fact]
+        public void ShouldAllowCatchingConvertedClrExceptions()
+        {
+            var engine = new Engine(opts => opts.CatchClrExceptions(exc => exc is InvalidOperationException));
+            engine.SetValue("fn", new ClrFunctionInstance(engine, "fn", (_, _) => throw new InvalidOperationException("This is a C# error")));
+            const string Source = @"
+try {
+  fn();
+} catch (e) {
+  throw new Error('Caught: ' + e.message);
+}
+";
+
+            var exc = Assert.Throws<JavaScriptException>(() => engine.Execute(Source));
+            Assert.Equal(exc.Message, "Caught: This is a C# error");
+        }
+
+        class Baz
+        {
+            public int DisposeCalls { get; private set; }
+            public IEnumerable<int> Enumerator
+            {
+                get
+                {
+                    try
+                    {
+                        for (int i = 0; i < 10; i++) yield return i;
+                    }
+                    finally     // finally clause is translated into IDisposable.Dispose in underlying IEnumerator
+                    {
+                        ++DisposeCalls;
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void ShouldCallEnumeratorDisposeOnNormalTermination()
+        {
+            var engine = new Engine();
+            var baz = new Baz();
+            engine.SetValue("baz", baz);
+            const string Source = @"
+for (let i of baz.Enumerator) {
+}";
+            engine.Execute(Source);
+            Assert.Equal(1, baz.DisposeCalls);
+        }
+
+        [Fact]
+        public void ShouldCallEnumeratorDisposeOnBreak()
+        {
+            var engine = new Engine();
+            var baz = new Baz();
+            engine.SetValue("baz", baz);
+            const string Source = @"
+for (let i of baz.Enumerator) {
+  if (i == 2) break;
+}";
+            engine.Execute(Source);
+            Assert.Equal(1, baz.DisposeCalls);
+        }
+
+        [Fact]
+        public void ShouldCallEnumeratorDisposeOnException()
+        {
+            var engine = new Engine();
+            var baz = new Baz();
+            engine.SetValue("baz", baz);
+            const string Source = @"
+try {
+  for (let i of baz.Enumerator) {
+    if (i == 2) throw 'exception';
+  }
+} catch (e) {
+}";
+            engine.Execute(Source);
+            Assert.Equal(1, baz.DisposeCalls);
+        }
+
+        public class PropertyTestClass
+        {
+            public object Value;
+        }
+
+        [Fact]
+        public void PropertiesOfJsObjectPassedToClrShouldBeReadable()
+        {
+            _engine.SetValue("MyClass", typeof(PropertyTestClass));
+            RunTest(@"
+                var obj = new MyClass();
+                obj.Value = { foo: 'bar' };
+                equal('bar', obj.Value.foo);
+            ");
+        }
+
+        [Fact]
+        public void ShouldBeAbleToDeleteDictionaryEntries()
+        {
+            var engine = new Engine(options => options.Strict());
+
+            var dictionary = new Dictionary<string, int>
+            {
+                { "a", 1 },
+                { "b", 2 }
+            };
+
+            engine.SetValue("data", dictionary);
+            
+            Assert.True(engine.Evaluate("Object.hasOwn(data, 'a')").AsBoolean());
+            Assert.True(engine.Evaluate("data['a'] === 1").AsBoolean());
+
+            engine.Evaluate("data['a'] = 42");
+            Assert.True(engine.Evaluate("data['a'] === 42").AsBoolean());
+            
+            Assert.Equal(42, dictionary["a"]);
+
+            engine.Execute("delete data['a'];");
+            
+            Assert.False(engine.Evaluate("Object.hasOwn(data, 'a')").AsBoolean());
+            Assert.False(engine.Evaluate("data['a'] === 42").AsBoolean());
+            
+            Assert.False(dictionary.ContainsKey("a"));
+            
+            var engineNoWrite = new Engine(options => options.Strict().AllowClrWrite(false));
+
+            dictionary = new Dictionary<string, int>
+            {
+                { "a", 1 },
+                { "b", 2 }
+            };
+            
+            engineNoWrite.SetValue("data", dictionary);
+            
+            var ex1 = Assert.Throws<JavaScriptException>(() => engineNoWrite.Evaluate("data['a'] = 42"));
+            Assert.Equal("Cannot assign to read only property 'a' of System.Collections.Generic.Dictionary`2[System.String,System.Int32]", ex1.Message);
+
+            // no changes
+            Assert.True(engineNoWrite.Evaluate("data['a'] === 1").AsBoolean());
+
+            var ex2 = Assert.Throws<JavaScriptException>(() => engineNoWrite.Execute("delete data['a'];"));
+            Assert.Equal("Cannot delete property 'a' of System.Collections.Generic.Dictionary`2[System.String,System.Int32]", ex2.Message);
         }
     }
 }

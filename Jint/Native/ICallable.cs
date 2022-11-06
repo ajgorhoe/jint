@@ -1,7 +1,7 @@
-﻿namespace Jint.Native
+namespace Jint.Native
 {
-    public interface ICallable
+    internal interface ICallable
     {
-        JsValue Call(JsValue thisObject, JsValue[] arguments);
+        JsValue Call(JsValue thisObject, params JsValue[] arguments);
     }
 }

@@ -1,5 +1,5 @@
-﻿using System;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -9,20 +9,24 @@ using Jint.Runtime.Interop;
 
 namespace Jint.Native.Date
 {
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-date-constructor
+    /// </summary>
     public sealed class DateConstructor : FunctionInstance, IConstructor
     {
-        internal static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        internal static readonly DateTime Epoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         private static readonly string[] DefaultFormats = {
-            "yyyy-MM-ddTHH:mm:ss.FFF",
-            "yyyy-MM-ddTHH:mm:ss",
-            "yyyy-MM-ddTHH:mm",
             "yyyy-MM-dd",
             "yyyy-MM",
             "yyyy"
         };
 
         private static readonly string[] SecondaryFormats = {
+            "yyyy-MM-ddTHH:mm:ss.FFF",
+            "yyyy-MM-ddTHH:mm:ss",
+            "yyyy-MM-ddTHH:mm",
+
             // Formats used in DatePrototype toString methods
             "ddd MMM dd yyyy HH:mm:ss 'GMT'K",
             "ddd MMM dd yyyy",
@@ -67,23 +71,42 @@ namespace Jint.Native.Date
             _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
 
+        internal DatePrototype PrototypeObject { get; }
+
         protected override void Initialize()
         {
-            const PropertyFlag lengthFlags = PropertyFlag.Configurable;
-            const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
+            const PropertyFlag LengthFlags = PropertyFlag.Configurable;
+            const PropertyFlag PropertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
 
             var properties = new PropertyDictionary(3, checkExistingKeys: false)
             {
-                ["parse"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "parse", Parse, 1, lengthFlags), propertyFlags),
-                ["UTC"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "UTC", Utc, 7, lengthFlags), propertyFlags),
-                ["now"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "now", Now, 0, lengthFlags), propertyFlags)
+                ["parse"] = new(new ClrFunctionInstance(Engine, "parse", Parse, 1, LengthFlags), PropertyFlags),
+                ["UTC"] = new(new ClrFunctionInstance(Engine, "UTC", Utc, 7, LengthFlags), PropertyFlags),
+                ["now"] = new(new ClrFunctionInstance(Engine, "now", Now, 0, LengthFlags), PropertyFlags)
             };
             SetProperties(properties);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-date.parse
+        /// </summary>
         private JsValue Parse(JsValue thisObj, JsValue[] arguments)
         {
             var date = TypeConverter.ToString(arguments.At(0));
+            var negative = date.StartsWith("-");
+            if (negative)
+            {
+                date = date.Substring(1);
+            }
+
+            var startParen = date.IndexOf('(');
+            if (startParen != -1)
+            {
+                // informative text
+                date = date.Substring(0, startParen);
+            }
+
+            date = date.Trim();
 
             if (!DateTime.TryParseExact(date, DefaultFormats, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var result))
             {
@@ -100,10 +123,10 @@ namespace Jint.Native.Date
                 }
             }
 
-            return FromDateTime(result);
+            return FromDateTime(result, negative);
         }
 
-        private JsValue Utc(JsValue thisObj, JsValue[] arguments)
+        private static JsValue Utc(JsValue thisObj, JsValue[] arguments)
         {
             var y = TypeConverter.ToNumber(arguments.At(0));
             var m = TypeConverter.ToNumber(arguments.At(1, JsNumber.PositiveZero));
@@ -123,7 +146,7 @@ namespace Jint.Native.Date
                 DatePrototype.MakeDay(y, m, dt),
                 DatePrototype.MakeTime(h, min, s, milli));
 
-            return TimeClip(finalDate);
+            return finalDate.TimeClip();
         }
 
         private static JsValue Now(JsValue thisObj, JsValue[] arguments)
@@ -131,26 +154,40 @@ namespace Jint.Native.Date
             return System.Math.Floor((DateTime.UtcNow - Epoch).TotalMilliseconds);
         }
 
-        public override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             return PrototypeObject.ToString(Construct(Arguments.Empty, thisObject), Arguments.Empty);
         }
 
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
+
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.9.3
+        /// https://tc39.es/ecma262/#sec-date
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
         {
-            double dv;
+            // fast path is building default, new Date()
             if (arguments.Length == 0 || newTarget.IsUndefined())
             {
-                dv = FromDateTime(DateTime.UtcNow);
+                return OrdinaryCreateFromConstructor(
+                    newTarget,
+                    static intrinsics => intrinsics.Date.PrototypeObject,
+                    static (engine, _, dateValue) => new DateInstance(engine, dateValue),
+                    (DateTime.UtcNow - Epoch).TotalMilliseconds);
             }
-            else if (arguments.Length == 1)
+
+            return ConstructUnlikely(arguments, newTarget);
+        }
+
+        private DateInstance ConstructUnlikely(JsValue[] arguments, JsValue newTarget)
+        {
+            double dv;
+            if (arguments.Length == 1)
             {
                 if (arguments[0] is DateInstance date)
                 {
-                    return Construct(date.PrimitiveValue);
+                    return Construct(date.DateValue);
                 }
 
                 var v = TypeConverter.ToPrimitive(arguments[0]);
@@ -159,7 +196,7 @@ namespace Jint.Native.Date
                     return Construct(((JsNumber) Parse(Undefined, Arguments.From(v)))._value);
                 }
 
-                dv = TimeClip(TypeConverter.ToNumber(v));
+                dv = TypeConverter.ToNumber(v);
             }
             else
             {
@@ -181,64 +218,46 @@ namespace Jint.Native.Date
                     DatePrototype.MakeDay(y, m, dt),
                     DatePrototype.MakeTime(h, min, s, milli));
 
-                dv = TimeClip(PrototypeObject.Utc(finalDate));
+                dv = PrototypeObject.Utc(finalDate);
             }
 
-            var o = OrdinaryCreateFromConstructor(
+            return OrdinaryCreateFromConstructor(
                 newTarget,
                 static intrinsics => intrinsics.Date.PrototypeObject,
-                static (engine, realm, _) => new DateInstance(engine));
-            o.PrimitiveValue = dv;
-            return o;
+                static (engine, _, dateValue) => new DateInstance(engine, dateValue), dv);
         }
 
-        public DatePrototype PrototypeObject { get; private set; }
+        public DateInstance Construct(DateTimeOffset value) => Construct(value.UtcDateTime);
 
-        public DateInstance Construct(DateTimeOffset value)
-        {
-            return Construct(value.UtcDateTime);
-        }
-
-        public DateInstance Construct(DateTime value)
-        {
-            return Construct(FromDateTime(value));
-        }
+        public DateInstance Construct(DateTime value) => Construct(FromDateTime(value));
 
         public DateInstance Construct(double time)
         {
-            var instance = new DateInstance(_engine)
-            {
-                _prototype = PrototypeObject,
-                PrimitiveValue = TimeClip(time)
-            };
-
-            return instance;
+            return OrdinaryCreateFromConstructor(
+                Undefined,
+                static intrinsics => intrinsics.Date.PrototypeObject,
+                static (engine, _, dateValue) => new DateInstance(engine, dateValue), time);
         }
 
-        private static double TimeClip(double time)
+        private double FromDateTime(DateTime dt, bool negative = false)
         {
-            if (double.IsInfinity(time) || double.IsNaN(time))
-            {
-                return double.NaN;
-            }
-
-            if (System.Math.Abs(time) > 8640000000000000)
-            {
-                return double.NaN;
-            }
-
-            return TypeConverter.ToInteger(time) + 0;
-        }
-
-        private double FromDateTime(DateTime dt)
-        {
-            var convertToUtcAfter = (dt.Kind == DateTimeKind.Unspecified);
+            var convertToUtcAfter = dt.Kind == DateTimeKind.Unspecified;
 
             var dateAsUtc = dt.Kind == DateTimeKind.Local
                 ? dt.ToUniversalTime()
                 : DateTime.SpecifyKind(dt, DateTimeKind.Utc);
 
-            var result = (dateAsUtc - Epoch).TotalMilliseconds;
+            double result;
+            if (negative)
+            {
+                var zero = (Epoch - DateTime.MinValue).TotalMilliseconds;
+                result = zero - TimeSpan.FromTicks(dateAsUtc.Ticks).TotalMilliseconds;
+                result *= -1;
+            }
+            else
+            {
+                result = (dateAsUtc - Epoch).TotalMilliseconds;
+            }
 
             if (convertToUtcAfter)
             {
