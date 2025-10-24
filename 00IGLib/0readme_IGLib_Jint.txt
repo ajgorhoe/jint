@@ -13,4 +13,3 @@ Information about branches used by IGLib:
   b5c6801aa128b72c6ca56b5627c6966099ba72c8 from 1. 12. 2021, 19:41:43.
   00IGLib/00_IGLibInfoAdditions is then merged into this branch.
 
-
