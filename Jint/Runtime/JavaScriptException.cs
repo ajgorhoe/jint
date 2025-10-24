@@ -1,8 +1,8 @@
-using Esprima;
+using System.Text;
 using Jint.Native;
 using Jint.Native.Error;
 using Jint.Native.Object;
-using Jint.Pooling;
+using Jint.Runtime.Descriptors;
 
 namespace Jint.Runtime;
 
@@ -26,7 +26,7 @@ public class JavaScriptException : JintException
     private readonly JavaScriptErrorWrapperException _jsErrorException;
 
     public string? JavaScriptStackTrace => _jsErrorException.StackTrace;
-    public ref readonly Location Location => ref _jsErrorException.Location;
+    public ref readonly SourceLocation Location => ref _jsErrorException.Location;
     public JsValue Error => _jsErrorException.Error;
 
     internal JavaScriptException(ErrorConstructor errorConstructor)
@@ -49,13 +49,13 @@ public class JavaScriptException : JintException
 
     public string GetJavaScriptErrorString() => _jsErrorException.ToString();
 
-    public JavaScriptException SetJavaScriptCallstack(Engine engine, in Location location, bool overwriteExisting = false)
+    public JavaScriptException SetJavaScriptCallstack(Engine engine, in SourceLocation location, bool overwriteExisting = false)
     {
         _jsErrorException.SetCallstack(engine, location, overwriteExisting);
         return this;
     }
 
-    public JavaScriptException SetJavaScriptLocation(in Location location)
+    public JavaScriptException SetJavaScriptLocation(in SourceLocation location)
     {
         _jsErrorException.SetLocation(location);
         return this;
@@ -64,7 +64,7 @@ public class JavaScriptException : JintException
     private sealed class JavaScriptErrorWrapperException : JintException
     {
         private string? _callStack;
-        private Location _location;
+        private SourceLocation _location;
 
         internal JavaScriptErrorWrapperException(JsValue error, string? message = null)
             : base(message ?? GetMessage(error))
@@ -74,21 +74,21 @@ public class JavaScriptException : JintException
 
         public JsValue Error { get; }
 
-        public ref readonly Location Location => ref _location;
+        public ref readonly SourceLocation Location => ref _location;
 
-        internal void SetLocation(Location location)
+        internal void SetLocation(in SourceLocation location)
         {
             _location = location;
         }
 
-        internal void SetCallstack(Engine engine, Location location, bool overwriteExisting)
+        internal void SetCallstack(Engine engine, in SourceLocation location, bool overwriteExisting)
         {
             _location = location;
 
             var errObj = Error.IsObject() ? Error.AsObject() : null;
             if (errObj is null)
             {
-                _callStack = engine.CallStack.BuildCallStackString(location);
+                _callStack = engine.CallStack.BuildCallStackString(engine, location);
                 return;
             }
 
@@ -99,8 +99,8 @@ public class JavaScriptException : JintException
             }
             else
             {
-                _callStack = engine.CallStack.BuildCallStackString(location);
-                errObj.FastAddProperty(CommonProperties.Stack, _callStack, false, false, false);
+                _callStack = engine.CallStack.BuildCallStackString(engine, location);
+                errObj.FastSetProperty(CommonProperties.Stack._value, new PropertyDescriptor(_callStack, false, false, false));
             }
         }
 
@@ -131,8 +131,7 @@ public class JavaScriptException : JintException
 
         public override string ToString()
         {
-            using var rent = StringBuilderPool.Rent();
-            var sb = rent.Builder;
+            var sb = new ValueStringBuilder();
 
             sb.Append("Error");
             var message = Message;
@@ -149,7 +148,7 @@ public class JavaScriptException : JintException
                 sb.Append(stackTrace);
             }
 
-            return rent.ToString();
+            return sb.ToString();
         }
     }
 }

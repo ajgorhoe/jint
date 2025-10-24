@@ -1,210 +1,237 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Text;
-using Esprima;
-using Esprima.Ast;
 using Jint.Collections;
 using Jint.Native.Function;
-using Jint.Pooling;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
+using Environment = Jint.Runtime.Environments.Environment;
 
-namespace Jint.Runtime.CallStack
+namespace Jint.Runtime.CallStack;
+
+// smaller version with only required info
+internal readonly record struct CallStackExecutionContext
 {
-    // smaller version with only required info
-    internal readonly record struct CallStackExecutionContext
+    public CallStackExecutionContext(in ExecutionContext context)
     {
-        public CallStackExecutionContext(in ExecutionContext context)
-        {
-            LexicalEnvironment = context.LexicalEnvironment;
-        }
+        LexicalEnvironment = context.LexicalEnvironment;
+    }
 
-        internal readonly EnvironmentRecord LexicalEnvironment;
+    internal readonly Environment LexicalEnvironment;
 
-        internal EnvironmentRecord GetThisEnvironment()
+    internal Environment GetThisEnvironment()
+    {
+        var lex = LexicalEnvironment;
+        while (true)
         {
-            var lex = LexicalEnvironment;
-            while (true)
+            if (lex is not null)
             {
-                if (lex != null)
+                if (lex.HasThisBinding())
                 {
-                    if (lex.HasThisBinding())
-                    {
-                        return lex;
+                    return lex;
 
-                    }
-
-                    lex = lex._outerEnv;
                 }
+
+                lex = lex._outerEnv;
             }
         }
     }
+}
 
-    internal sealed class JintCallStack
+internal sealed class JintCallStack
+{
+    private readonly RefStack<CallStackElement> _stack = new();
+    private readonly Dictionary<CallStackElement, int>? _statistics;
+
+    // Internal for use by DebugHandler
+    internal RefStack<CallStackElement> Stack => _stack;
+
+    public JintCallStack(bool trackRecursionDepth)
     {
-        private readonly RefStack<CallStackElement> _stack = new();
-        private readonly Dictionary<CallStackElement, int>? _statistics;
-
-        // Internal for use by DebugHandler
-        internal RefStack<CallStackElement> Stack => _stack;
-
-        public JintCallStack(bool trackRecursionDepth)
+        if (trackRecursionDepth)
         {
-            if (trackRecursionDepth)
+            _statistics = new Dictionary<CallStackElement, int>(CallStackElementComparer.Instance);
+        }
+    }
+
+    public int Push(Function function, JintExpression? expression, in ExecutionContext executionContext)
+    {
+        var item = new CallStackElement(function, expression, new CallStackExecutionContext(executionContext));
+        _stack.Push(item);
+        if (_statistics is not null)
+        {
+#pragma warning disable CA1854
+#pragma warning disable CA1864
+            if (_statistics.ContainsKey(item))
+#pragma warning restore CA1854
+#pragma warning restore CA1864
             {
-                _statistics = new Dictionary<CallStackElement, int>(CallStackElementComparer.Instance);
+                return ++_statistics[item];
+            }
+            else
+            {
+                _statistics.Add(item, 0);
+                return 0;
             }
         }
 
-        public int Push(FunctionInstance functionInstance, JintExpression? expression, in ExecutionContext executionContext)
+        return -1;
+    }
+
+    public CallStackElement Pop()
+    {
+        ref readonly var item = ref _stack.Pop();
+        if (_statistics is not null)
         {
-            var item = new CallStackElement(functionInstance, expression, new CallStackExecutionContext(executionContext));
-            _stack.Push(item);
-            if (_statistics is not null)
+            if (_statistics[item] == 0)
             {
-                if (_statistics.ContainsKey(item))
-                {
-                    return ++_statistics[item];
-                }
-                else
-                {
-                    _statistics.Add(item, 0);
-                    return 0;
-                }
+                _statistics.Remove(item);
+            }
+            else
+            {
+                _statistics[item]--;
+            }
+        }
+
+        return item;
+    }
+
+    public bool TryPeek([NotNullWhen(true)] out CallStackElement item)
+    {
+        return _stack.TryPeek(out item);
+    }
+
+    public int Count => _stack._size;
+
+    public void Clear()
+    {
+        _stack.Clear();
+        _statistics?.Clear();
+    }
+
+    public override string ToString()
+    {
+        return string.Join("->", _stack.Select(static cse => cse.ToString()).Reverse());
+    }
+
+    internal string BuildCallStackString(Engine engine, SourceLocation location, int excludeTop = 0)
+    {
+        static void AppendLocation(
+            ref ValueStringBuilder sb,
+            string shortDescription,
+            in SourceLocation loc,
+            in CallStackElement? element,
+            Options.BuildCallStackDelegate? callStackBuilder)
+        {
+            if (callStackBuilder != null && TryInvokeCustomCallStackHandler(callStackBuilder, element, shortDescription, loc, ref sb))
+            {
+                return;
             }
 
-            return -1;
-        }
+            var hasShortDescription = !string.IsNullOrWhiteSpace(shortDescription);
 
-        public CallStackElement Pop()
-        {
-            ref readonly var item = ref _stack.Pop();
-            if (_statistics is not null)
+            sb.Append("    at ");
+
+            if (hasShortDescription)
             {
-                if (_statistics[item] == 0)
-                {
-                    _statistics.Remove(item);
-                }
-                else
-                {
-                    _statistics[item]--;
-                }
+                sb.Append(shortDescription);
+                sb.Append(" (");
             }
 
-            return item;
-        }
+            sb.Append(loc.SourceFile);
+            sb.Append(':');
+            sb.Append(loc.End.Line);
+            sb.Append(':');
+            sb.Append(loc.Start.Column + 1); // report column number instead of index
 
-        public bool TryPeek([NotNullWhen(true)] out CallStackElement item)
-        {
-            return _stack.TryPeek(out item);
-        }
-
-        public int Count => _stack._size;
-
-        public void Clear()
-        {
-            _stack.Clear();
-            _statistics?.Clear();
-        }
-
-        public override string ToString()
-        {
-            return string.Join("->", _stack.Select(cse => cse.ToString()).Reverse());
-        }
-
-        internal string BuildCallStackString(Location location, int excludeTop = 0)
-        {
-            static void AppendLocation(
-                StringBuilder sb,
-                string shortDescription,
-                in Location loc,
-                in CallStackElement? element)
+            if (hasShortDescription)
             {
-                sb
-                    .Append("   at");
-
-                if (!string.IsNullOrWhiteSpace(shortDescription))
-                {
-                    sb
-                        .Append(" ")
-                        .Append(shortDescription);
-                }
-
-                if (element?.Arguments is not null)
-                {
-                    // it's a function
-                    sb.Append(" (");
-                    for (var index = 0; index < element.Value.Arguments.Value.Count; index++)
-                    {
-                        if (index != 0)
-                        {
-                            sb.Append(", ");
-                        }
-
-                        var arg = element.Value.Arguments.Value[index];
-                        sb.Append(GetPropertyKey(arg));
-                    }
-                    sb.Append(")");
-                }
-
-                sb
-                    .Append(" ")
-                    .Append(loc.Source)
-                    .Append(":")
-                    .Append(loc.End.Line)
-                    .Append(":")
-                    .Append(loc.Start.Column + 1) // report column number instead of index
-                    .AppendLine();
+                sb.Append(')');
             }
 
-            using var sb = StringBuilderPool.Rent();
+            sb.Append(System.Environment.NewLine);
+        }
 
-            // stack is one frame behind function-wise when we start to process it from expression level
-            var index = _stack._size - 1 - excludeTop;
-            var element = index >= 0 ? _stack[index] : (CallStackElement?) null;
-            var shortDescription = element?.ToString() ?? "";
+        var customCallStackBuilder = engine.Options.Interop.BuildCallStackHandler;
+        var builder = new ValueStringBuilder();
 
-            AppendLocation(sb.Builder, shortDescription, location, element);
+        // stack is one frame behind function-wise when we start to process it from expression level
+        var index = _stack._size - 1 - excludeTop;
+        var element = index >= 0 ? _stack[index] : (CallStackElement?) null;
+        var shortDescription = element?.ToString() ?? "";
+
+        AppendLocation(ref builder, shortDescription, location, element, customCallStackBuilder);
+
+        location = element?.Location ?? default;
+        index--;
+
+        while (index >= -1)
+        {
+            element = index >= 0 ? _stack[index] : null;
+            shortDescription = element?.ToString() ?? "";
+
+            AppendLocation(ref builder, shortDescription, location, element, customCallStackBuilder);
 
             location = element?.Location ?? default;
             index--;
-
-            while (index >= -1)
-            {
-                element = index >= 0 ? _stack[index] : null;
-                shortDescription = element?.ToString() ?? "";
-
-                AppendLocation(sb.Builder, shortDescription, location, element);
-
-                location = element?.Location ?? default;
-                index--;
-            }
-
-            return sb.ToString().TrimEnd();
         }
 
-        /// <summary>
-        /// A version of <see cref="EsprimaExtensions.GetKey"/> that cannot get into loop as we are already building a stack.
-        /// </summary>
-        private static string GetPropertyKey(Node expression)
-        {
-            if (expression is Literal literal)
-            {
-                return EsprimaExtensions.LiteralKeyToString(literal);
-            }
+        var result = builder.AsSpan().TrimEnd().ToString();
 
-            if (expression is Identifier identifier)
-            {
-                return identifier.Name ?? "";
-            }
+        builder.Dispose();
 
-            if (expression is StaticMemberExpression staticMemberExpression)
-            {
-                return GetPropertyKey(staticMemberExpression.Object) + "." +
-                       GetPropertyKey(staticMemberExpression.Property);
-            }
-
-            return "?";
-        }
-
+        return result;
     }
+
+    private static bool TryInvokeCustomCallStackHandler(
+        Options.BuildCallStackDelegate handler,
+        CallStackElement? element,
+        string shortDescription,
+        SourceLocation loc,
+        ref ValueStringBuilder sb)
+    {
+        string[]? arguments = null;
+        if (element?.Arguments is not null)
+        {
+            var args = element.Value.Arguments.Value;
+            arguments = args.Count > 0 ? new string[args.Count] : [];
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                arguments[i] = GetPropertyKey(args[i]);
+            }
+        }
+
+        var str = handler(shortDescription, loc, arguments);
+        if (!string.IsNullOrEmpty(str))
+        {
+            sb.Append(str);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A version of <see cref="AstExtensions.GetKey"/> that cannot get into loop as we are already building a stack.
+    /// </summary>
+    private static string GetPropertyKey(Node expression)
+    {
+        if (expression is Literal literal)
+        {
+            return AstExtensions.LiteralKeyToString(literal);
+        }
+
+        if (expression is Identifier identifier)
+        {
+            return identifier.Name ?? "";
+        }
+
+        if (expression is MemberExpression { Computed: false } staticMemberExpression)
+        {
+            return $"{GetPropertyKey(staticMemberExpression.Object)}.{GetPropertyKey(staticMemberExpression.Property)}";
+        }
+
+        return "?";
+    }
+
 }

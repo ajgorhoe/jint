@@ -1,404 +1,383 @@
 using System.Diagnostics.CodeAnalysis;
-using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Iterator;
-using Jint.Native.Object;
-using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
-using Jint.Runtime.References;
+using Environment = Jint.Runtime.Environments.Environment;
 
-namespace Jint.Runtime.Interpreter.Statements
+namespace Jint.Runtime.Interpreter.Statements;
+
+/// <summary>
+/// https://tc39.es/ecma262/#sec-for-in-and-for-of-statements
+/// </summary>
+internal sealed class JintForInForOfStatement : JintStatement<Statement>
 {
-    /// <summary>
-    /// https://tc39.es/ecma262/#sec-for-in-and-for-of-statements
-    /// </summary>
-    internal sealed class JintForInForOfStatement : JintStatement<Statement>
+    private readonly Node _leftNode;
+    private readonly Statement _forBody;
+    private readonly Expression _rightExpression;
+    private readonly IterationKind _iterationKind;
+
+    private ProbablyBlockStatement _body;
+    private JintExpression? _expr;
+    private DestructuringPattern? _assignmentPattern;
+    private JintExpression _right = null!;
+    private List<Key>? _tdzNames;
+    private bool _destructuring;
+    private LhsKind _lhsKind;
+    private DisposeHint _disposeHint;
+
+    public JintForInForOfStatement(ForInStatement statement) : base(statement)
     {
-        private readonly Node _leftNode;
-        private readonly Statement _forBody;
-        private readonly Expression _rightExpression;
-        private readonly IterationKind _iterationKind;
+        _leftNode = statement.Left;
+        _rightExpression = statement.Right;
+        _forBody = statement.Body;
+        _iterationKind = IterationKind.Enumerate;
+    }
 
-        private ProbablyBlockStatement _body;
-        private JintExpression? _expr;
-        private BindingPattern? _assignmentPattern;
-        private JintExpression _right = null!;
-        private List<string>? _tdzNames;
-        private bool _destructuring;
-        private LhsKind _lhsKind;
+    public JintForInForOfStatement(ForOfStatement statement) : base(statement)
+    {
+        _leftNode = statement.Left;
+        _rightExpression = statement.Right;
+        _forBody = statement.Body;
+        _iterationKind = IterationKind.Iterate;
+    }
 
-        public JintForInForOfStatement(ForInStatement statement) : base(statement)
+    protected override void Initialize(EvaluationContext context2)
+    {
+        _lhsKind = LhsKind.Assignment;
+        _disposeHint = DisposeHint.Normal;
+        switch (_leftNode)
         {
-            _leftNode = statement.Left;
-            _rightExpression = statement.Right;
-            _forBody = statement.Body;
-            _iterationKind = IterationKind.Enumerate;
-        }
-
-        public JintForInForOfStatement(ForOfStatement statement) : base(statement)
-        {
-            _leftNode = statement.Left;
-            _rightExpression = statement.Right;
-            _forBody = statement.Body;
-            _iterationKind = IterationKind.Iterate;
-        }
-
-        protected override void Initialize(EvaluationContext context)
-        {
-            _lhsKind = LhsKind.Assignment;
-            var engine = context.Engine;
-            if (_leftNode is VariableDeclaration variableDeclaration)
-            {
-                _lhsKind = variableDeclaration.Kind == VariableDeclarationKind.Var
-                    ? LhsKind.VarBinding
-                    : LhsKind.LexicalBinding;
-
-                var variableDeclarationDeclaration = variableDeclaration.Declarations[0];
-                var id = variableDeclarationDeclaration.Id;
-                if (_lhsKind == LhsKind.LexicalBinding)
+            case VariableDeclaration variableDeclaration:
                 {
-                    _tdzNames = new List<string>(1);
-                    id.GetBoundNames(_tdzNames);
+                    _lhsKind = variableDeclaration.Kind == VariableDeclarationKind.Var
+                        ? LhsKind.VarBinding
+                        : LhsKind.LexicalBinding;
+
+                    _disposeHint = variableDeclaration.Kind.GetDisposeHint();
+
+                    var variableDeclarationDeclaration = variableDeclaration.Declarations[0];
+                    var id = variableDeclarationDeclaration.Id;
+                    if (_lhsKind == LhsKind.LexicalBinding)
+                    {
+                        _tdzNames = new List<Key>(1);
+                        id.GetBoundNames(_tdzNames);
+                    }
+
+                    if (id is DestructuringPattern pattern)
+                    {
+                        _destructuring = true;
+                        _assignmentPattern = pattern;
+                    }
+                    else
+                    {
+                        var identifier = (Identifier) id;
+                        _expr = new JintIdentifierExpression(identifier);
+                    }
+
+                    break;
+                }
+            case DestructuringPattern pattern:
+                _destructuring = true;
+                _assignmentPattern = pattern;
+                break;
+            case MemberExpression memberExpression:
+                _expr = new JintMemberExpression(memberExpression);
+                break;
+            default:
+                _expr = new JintIdentifierExpression((Identifier) _leftNode);
+                break;
+        }
+
+        _body = new ProbablyBlockStatement(_forBody);
+        _right = JintExpression.Build(_rightExpression);
+    }
+
+    protected override Completion ExecuteInternal(EvaluationContext context)
+    {
+        if (!HeadEvaluation(context, out var keyResult))
+        {
+            return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
+        }
+
+        return BodyEvaluation(context, _expr, _body, keyResult, IterationKind.Enumerate, _lhsKind);
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-forin-div-ofheadevaluation-tdznames-expr-iterationkind
+    /// </summary>
+    private bool HeadEvaluation(EvaluationContext context, [NotNullWhen(true)] out IteratorInstance? result)
+    {
+        var engine = context.Engine;
+        var oldEnv = engine.ExecutionContext.LexicalEnvironment;
+        var tdz = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+        if (_tdzNames != null)
+        {
+            var TDZEnvRec = tdz;
+            foreach (var name in _tdzNames)
+            {
+                TDZEnvRec.CreateMutableBinding(name);
+            }
+        }
+
+        engine.UpdateLexicalEnvironment(tdz);
+        var exprValue = _right.GetValue(context);
+        engine.UpdateLexicalEnvironment(oldEnv);
+
+        if (_iterationKind == IterationKind.Enumerate)
+        {
+            if (exprValue.IsNullOrUndefined())
+            {
+                result = null;
+                return false;
+            }
+
+            var obj = TypeConverter.ToObject(engine.Realm, exprValue);
+            result = new IteratorInstance.EnumerableIterator(engine, obj.GetKeys());
+        }
+        else
+        {
+            result = exprValue as IteratorInstance ?? exprValue.GetIterator(engine.Realm);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-forin-div-ofbodyevaluation-lhs-stmt-iterator-lhskind-labelset
+    /// </summary>
+    private Completion BodyEvaluation(
+        EvaluationContext context,
+        JintExpression? lhs,
+        in ProbablyBlockStatement stmt,
+        IteratorInstance iteratorRecord,
+        IterationKind iterationKind,
+        LhsKind lhsKind,
+        IteratorKind iteratorKind = IteratorKind.Sync)
+    {
+        var engine = context.Engine;
+        var oldEnv = engine.ExecutionContext.LexicalEnvironment;
+        var v = JsValue.Undefined;
+        var destructuring = _destructuring;
+        string? lhsName = null;
+
+        var completionType = CompletionType.Normal;
+        var close = false;
+
+        try
+        {
+            while (true)
+            {
+                DeclarativeEnvironment? iterationEnv = null;
+                if (!iteratorRecord.TryIteratorStep(out var nextResult))
+                {
+                    close = true;
+                    return new Completion(CompletionType.Normal, v, _statement!);
                 }
 
-                if (id is BindingPattern bindingPattern)
+                if (iteratorKind == IteratorKind.Async)
                 {
-                    _destructuring = true;
-                    _assignmentPattern = bindingPattern;
+                    // nextResult = await nextResult;
+                    Throw.NotImplementedException("await");
+                }
+
+                var nextValue = nextResult.Get(CommonProperties.Value);
+                close = true;
+
+                object lhsRef = null!;
+                if (lhsKind != LhsKind.LexicalBinding)
+                {
+                    if (!destructuring)
+                    {
+                        lhsRef = lhs!.Evaluate(context);
+                    }
                 }
                 else
                 {
-                    var identifier = (Identifier) id;
-                    _expr = new JintIdentifierExpression(identifier);
-                }
-            }
-            else if (_leftNode is BindingPattern bindingPattern)
-            {
-                _destructuring = true;
-                _assignmentPattern = bindingPattern;
-            }
-            else if (_leftNode is MemberExpression memberExpression)
-            {
-                _expr = new JintMemberExpression(memberExpression);
-            }
-            else
-            {
-                _expr = new JintIdentifierExpression((Identifier) _leftNode);
-            }
-
-            _body = new ProbablyBlockStatement(_forBody);
-            _right = JintExpression.Build(_rightExpression);
-        }
-
-        protected override Completion ExecuteInternal(EvaluationContext context)
-        {
-            if (!HeadEvaluation(context, out var keyResult))
-            {
-                return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
-            }
-
-            return BodyEvaluation(context, _expr, _body, keyResult, IterationKind.Enumerate, _lhsKind);
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-forin-div-ofheadevaluation-tdznames-expr-iterationkind
-        /// </summary>
-        private bool HeadEvaluation(EvaluationContext context, [NotNullWhen(true)] out IteratorInstance? result)
-        {
-            var engine = context.Engine;
-            var oldEnv = engine.ExecutionContext.LexicalEnvironment;
-            var tdz = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
-            if (_tdzNames != null)
-            {
-                var TDZEnvRec = tdz;
-                foreach (var name in _tdzNames)
-                {
-                    TDZEnvRec.CreateMutableBinding(name);
-                }
-            }
-
-            engine.UpdateLexicalEnvironment(tdz);
-            var exprValue = _right.GetValue(context);
-            engine.UpdateLexicalEnvironment(oldEnv);
-
-            if (_iterationKind == IterationKind.Enumerate)
-            {
-                if (exprValue.IsNullOrUndefined())
-                {
-                    result = null;
-                    return false;
-                }
-
-                var obj = TypeConverter.ToObject(engine.Realm, exprValue);
-                result = new ObjectKeyVisitor(engine, obj);
-            }
-            else
-            {
-                result = exprValue as IteratorInstance ?? exprValue.GetIterator(engine.Realm);
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-forin-div-ofbodyevaluation-lhs-stmt-iterator-lhskind-labelset
-        /// </summary>
-        private Completion BodyEvaluation(
-            EvaluationContext context,
-            JintExpression? lhs,
-            in ProbablyBlockStatement stmt,
-            IteratorInstance iteratorRecord,
-            IterationKind iterationKind,
-            LhsKind lhsKind,
-            IteratorKind iteratorKind = IteratorKind.Sync)
-        {
-            var engine = context.Engine;
-            var oldEnv = engine.ExecutionContext.LexicalEnvironment;
-            var v = Undefined.Instance;
-            var destructuring = _destructuring;
-            string? lhsName = null;
-
-            var completionType = CompletionType.Normal;
-            var close = false;
-
-            try
-            {
-                while (true)
-                {
-                    EnvironmentRecord? iterationEnv = null;
-                    if (!iteratorRecord.TryIteratorStep(out var nextResult))
+                    iterationEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                    if (_tdzNames != null)
                     {
-                        close = true;
-                        return new Completion(CompletionType.Normal, v, _statement!);
+                        BindingInstantiation(iterationEnv);
                     }
+                    engine.UpdateLexicalEnvironment(iterationEnv);
 
-                    if (iteratorKind == IteratorKind.Async)
-                    {
-                        // nextResult = await nextResult;
-                        ExceptionHelper.ThrowNotImplementedException("await");
-                    }
-
-                    var nextValue = nextResult.Get(CommonProperties.Value);
-                    close = true;
-
-                    object lhsRef = null!;
-                    if (lhsKind != LhsKind.LexicalBinding)
-                    {
-                        if (!destructuring)
-                        {
-                            lhsRef = lhs!.Evaluate(context);
-                        }
-                    }
-                    else
-                    {
-                        iterationEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
-                        if (_tdzNames != null)
-                        {
-                            BindingInstantiation(iterationEnv);
-                        }
-                        engine.UpdateLexicalEnvironment(iterationEnv);
-
-                        if (!destructuring)
-                        {
-                            var identifier = (Identifier) ((VariableDeclaration) _leftNode).Declarations[0].Id;
-                            lhsName ??= identifier.Name;
-                            lhsRef = engine.ResolveBinding(lhsName);
-                        }
-                    }
-
-                    if (context.DebugMode)
-                    {
-                        context.Engine.DebugHandler.OnStep(_leftNode);
-                    }
-
-                    var status = CompletionType.Normal;
                     if (!destructuring)
                     {
-                        if (context.IsAbrupt())
-                        {
-                            close = true;
-                            status = context.Completion;
-                        }
-                        else if (lhsKind == LhsKind.LexicalBinding)
-                        {
-                            ((Reference) lhsRef).InitializeReferencedBinding(nextValue);
-                        }
-                        else
-                        {
-                            engine.PutValue((Reference) lhsRef, nextValue);
-                        }
+                        var identifier = (Identifier) ((VariableDeclaration) _leftNode).Declarations[0].Id;
+                        lhsName ??= identifier.Name;
+                        lhsRef = engine.ResolveBinding(lhsName);
+                    }
+                }
+
+                if (context.DebugMode)
+                {
+                    context.Engine.Debugger.OnStep(_leftNode);
+                }
+
+                var status = CompletionType.Normal;
+                if (!destructuring)
+                {
+                    if (context.IsAbrupt())
+                    {
+                        close = true;
+                        status = context.Completion;
                     }
                     else
                     {
-                        nextValue = BindingPatternAssignmentExpression.ProcessPatterns(
-                            context,
-                            _assignmentPattern!,
-                            nextValue,
-                            iterationEnv,
-                            checkPatternPropertyReference: _lhsKind != LhsKind.VarBinding);
-
-                        status = context.Completion;
-
-                        if (lhsKind == LhsKind.Assignment)
+                        var reference = (Reference) lhsRef;
+                        if (lhsKind == LhsKind.LexicalBinding || _leftNode.Type == NodeType.Identifier && !reference.IsUnresolvableReference)
                         {
-                            // DestructuringAssignmentEvaluation of assignmentPattern using nextValue as the argument.
-                        }
-                        else if (lhsKind == LhsKind.VarBinding)
-                        {
-                            // BindingInitialization for lhs passing nextValue and undefined as the arguments.
+                            reference.InitializeReferencedBinding(nextValue, _disposeHint);
                         }
                         else
                         {
-                            // BindingInitialization for lhs passing nextValue and iterationEnv as arguments
+                            engine.PutValue(reference, nextValue);
                         }
                     }
+                }
+                else
+                {
+                    nextValue = DestructuringPatternAssignmentExpression.ProcessPatterns(
+                        context,
+                        _assignmentPattern!,
+                        nextValue,
+                        iterationEnv,
+                        checkPatternPropertyReference: _lhsKind != LhsKind.VarBinding);
 
-                    if (status != CompletionType.Normal)
+                    status = context.Completion;
+
+                    if (lhsKind == LhsKind.Assignment)
                     {
-                        engine.UpdateLexicalEnvironment(oldEnv);
-                        if (_iterationKind == IterationKind.AsyncIterate)
-                        {
-                            iteratorRecord.Close(status);
-                            return new Completion(status, nextValue, context.LastSyntaxElement);
-                        }
+                        // DestructuringAssignmentEvaluation of assignmentPattern using nextValue as the argument.
+                    }
+#pragma warning disable MA0140
+                    else if (lhsKind == LhsKind.VarBinding)
+                    {
+                        // BindingInitialization for lhs passing nextValue and undefined as the arguments.
+                    }
+                    else
+                    {
+                        // BindingInitialization for lhs passing nextValue and iterationEnv as arguments
+                    }
+#pragma warning restore MA0140
+                }
 
-                        if (iterationKind == IterationKind.Enumerate)
-                        {
-                            return new Completion(status, nextValue, context.LastSyntaxElement);
-                        }
-
+                if (status != CompletionType.Normal)
+                {
+                    engine.UpdateLexicalEnvironment(oldEnv);
+                    if (_iterationKind == IterationKind.AsyncIterate)
+                    {
                         iteratorRecord.Close(status);
                         return new Completion(status, nextValue, context.LastSyntaxElement);
                     }
 
-                    var result = stmt.Execute(context);
-                    engine.UpdateLexicalEnvironment(oldEnv);
-
-                    if (!ReferenceEquals(result.Value, null))
+                    if (iterationKind == IterationKind.Enumerate)
                     {
-                        v = result.Value;
+                        return new Completion(status, nextValue, context.LastSyntaxElement);
                     }
 
-                    if (result.Type == CompletionType.Break && (context.Target == null || context.Target == _statement?.LabelSet?.Name))
-                    {
-                        completionType = CompletionType.Normal;
-                        return new Completion(CompletionType.Normal, v, _statement!);
-                    }
-
-                    if (result.Type != CompletionType.Continue || (context.Target != null && context.Target != _statement?.LabelSet?.Name))
-                    {
-                        completionType = result.Type;
-                        if (result.IsAbrupt())
-                        {
-                            close = true;
-                            return result;
-                        }
-                    }
+                    iteratorRecord.Close(status);
+                    return new Completion(status, nextValue, context.LastSyntaxElement);
                 }
-            }
-            catch
-            {
-                completionType = CompletionType.Throw;
-                throw;
-            }
-            finally
-            {
-                if (close)
-                {
-                    try
-                    {
-                        iteratorRecord.Close(completionType);
-                    }
-                    catch
-                    {
-                        // if we already have and exception, use it
-                        if (completionType != CompletionType.Throw)
-                        {
-                            throw;
-                        }
-                    }
-                }
+
+                var result = stmt.Execute(context);
+                result = iterationEnv?.DisposeResources(result) ?? result;
                 engine.UpdateLexicalEnvironment(oldEnv);
-            }
-        }
 
-        private void BindingInstantiation(EnvironmentRecord environment)
-        {
-            var envRec = (DeclarativeEnvironmentRecord) environment;
-            var variableDeclaration = (VariableDeclaration) _leftNode;
-            var boundNames = new List<string>();
-            variableDeclaration.GetBoundNames(boundNames);
-            for (var i = 0; i < boundNames.Count; i++)
-            {
-                var name = boundNames[i];
-                if (variableDeclaration.Kind == VariableDeclarationKind.Const)
+                if (!result.Value.IsEmpty)
                 {
-                    envRec.CreateImmutableBinding(name, strict: true);
+                    v = result.Value;
                 }
-                else
+
+                if (result.Type == CompletionType.Break && (context.Target == null || string.Equals(context.Target, _statement?.LabelSet?.Name, StringComparison.Ordinal)))
                 {
-                    envRec.CreateMutableBinding(name, canBeDeleted: false);
+                    completionType = CompletionType.Normal;
+                    return new Completion(CompletionType.Normal, v, _statement!);
                 }
-            }
-        }
 
-        private enum LhsKind
-        {
-            Assignment,
-            VarBinding,
-            LexicalBinding
-        }
-
-        private enum IteratorKind
-        {
-            Sync,
-            Async
-        }
-
-        private enum IterationKind
-        {
-            Enumerate,
-            Iterate,
-            AsyncIterate
-        }
-
-        private sealed class ObjectKeyVisitor : IteratorInstance
-        {
-            public ObjectKeyVisitor(Engine engine, ObjectInstance obj)
-                : base(engine, CreateEnumerator(obj))
-            {
-            }
-
-            private static IEnumerable<JsValue> CreateEnumerator(ObjectInstance obj)
-            {
-                var visited = new HashSet<JsValue>();
-                foreach (var key in obj.GetOwnPropertyKeys(Types.String))
+                if (result.Type != CompletionType.Continue || (context.Target != null && !string.Equals(context.Target, _statement?.LabelSet?.Name, StringComparison.Ordinal)))
                 {
-                    var desc = obj.GetOwnProperty(key);
-                    if (desc != PropertyDescriptor.Undefined)
+                    completionType = result.Type;
+                    if (iterationKind == IterationKind.Enumerate)
                     {
-                        visited.Add(key);
-                        if (desc.Enumerable)
-                        {
-                            yield return key;
-                        }
+                        // TODO es6-generators make sure we can start from where we left off
+                        //return result;
                     }
-                }
-
-                if (obj.Prototype is null)
-                {
-                    yield break;
-                }
-
-                foreach (var protoKey in CreateEnumerator(obj.Prototype))
-                {
-                    if (!visited.Contains(protoKey))
+                    if (result.IsAbrupt())
                     {
-                        yield return protoKey;
+                        close = true;
+                        return result;
                     }
                 }
             }
         }
+        catch
+        {
+            completionType = CompletionType.Throw;
+            throw;
+        }
+        finally
+        {
+            if (close)
+            {
+                try
+                {
+                    iteratorRecord.Close(completionType);
+                }
+                catch
+                {
+                    // if we already have and exception, use it
+                    if (completionType != CompletionType.Throw)
+                    {
+#pragma warning disable CA2219
+#pragma warning disable MA0072
+                        throw;
+#pragma warning restore MA0072
+#pragma warning restore CA2219
+                    }
+                }
+            }
+            engine.UpdateLexicalEnvironment(oldEnv);
+        }
+    }
+
+    private void BindingInstantiation(Environment environment)
+    {
+        var envRec = (DeclarativeEnvironment) environment;
+        var variableDeclaration = (VariableDeclaration) _leftNode;
+        var boundNames = new List<Key>();
+        variableDeclaration.GetBoundNames(boundNames);
+        for (var i = 0; i < boundNames.Count; i++)
+        {
+            var name = boundNames[i];
+            if (variableDeclaration.Kind == VariableDeclarationKind.Const)
+            {
+                envRec.CreateImmutableBinding(name, strict: true);
+            }
+            else
+            {
+                envRec.CreateMutableBinding(name, canBeDeleted: false);
+            }
+        }
+    }
+
+    private enum LhsKind
+    {
+        Assignment,
+        VarBinding,
+        LexicalBinding
+    }
+
+    private enum IteratorKind
+    {
+        Sync,
+        Async
+    }
+
+    private enum IterationKind
+    {
+        Enumerate,
+        Iterate,
+        AsyncIterate
     }
 }

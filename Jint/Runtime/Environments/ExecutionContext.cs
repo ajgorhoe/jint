@@ -1,18 +1,20 @@
-using System.Runtime.InteropServices;
 using Jint.Native.Function;
+
+using Jint.Native.Generator;
 
 namespace Jint.Runtime.Environments;
 
-[StructLayout(LayoutKind.Auto)]
 internal readonly struct ExecutionContext
 {
     internal ExecutionContext(
         IScriptOrModule? scriptOrModule,
-        EnvironmentRecord lexicalEnvironment,
-        EnvironmentRecord variableEnvironment,
-        PrivateEnvironmentRecord? privateEnvironment,
+        Environment lexicalEnvironment,
+        Environment variableEnvironment,
+        PrivateEnvironment? privateEnvironment,
         Realm realm,
-        FunctionInstance? function = null)
+        GeneratorInstance? generator = null,
+        Function? function = null,
+        ParserOptions? parserOptions = null)
     {
         ScriptOrModule = scriptOrModule;
         LexicalEnvironment = lexicalEnvironment;
@@ -20,41 +22,52 @@ internal readonly struct ExecutionContext
         PrivateEnvironment = privateEnvironment;
         Realm = realm;
         Function = function;
+        Generator = generator;
+        ParserOptions = parserOptions;
     }
 
     public readonly IScriptOrModule? ScriptOrModule;
-    public readonly EnvironmentRecord LexicalEnvironment;
-    public readonly EnvironmentRecord VariableEnvironment;
-    public readonly PrivateEnvironmentRecord? PrivateEnvironment;
+    public readonly Environment LexicalEnvironment;
+    public readonly Environment VariableEnvironment;
+    public readonly PrivateEnvironment? PrivateEnvironment;
     public readonly Realm Realm;
-    public readonly FunctionInstance? Function;
+    public readonly Function? Function;
+    public readonly GeneratorInstance? Generator;
+    public readonly ParserOptions? ParserOptions;
 
-    public ExecutionContext UpdateLexicalEnvironment(EnvironmentRecord lexicalEnvironment)
+    public bool Suspended => Generator?._generatorState == GeneratorState.SuspendedYield;
+
+    public ExecutionContext UpdateLexicalEnvironment(Environment lexicalEnvironment)
     {
-        return new ExecutionContext(ScriptOrModule, lexicalEnvironment, VariableEnvironment, PrivateEnvironment, Realm, Function);
+        return new ExecutionContext(ScriptOrModule, lexicalEnvironment, VariableEnvironment, PrivateEnvironment, Realm, Generator, Function);
     }
 
-    public ExecutionContext UpdateVariableEnvironment(EnvironmentRecord variableEnvironment)
+    public ExecutionContext UpdateVariableEnvironment(Environment variableEnvironment)
     {
-        return new ExecutionContext(ScriptOrModule, LexicalEnvironment, variableEnvironment, PrivateEnvironment, Realm, Function);
+        return new ExecutionContext(ScriptOrModule, LexicalEnvironment, variableEnvironment, PrivateEnvironment, Realm, Generator, Function);
     }
 
-    public ExecutionContext UpdatePrivateEnvironment(PrivateEnvironmentRecord? privateEnvironment)
+    public ExecutionContext UpdatePrivateEnvironment(PrivateEnvironment? privateEnvironment)
     {
-        return new ExecutionContext(ScriptOrModule, LexicalEnvironment, VariableEnvironment, privateEnvironment, Realm, Function);
+        return new ExecutionContext(ScriptOrModule, LexicalEnvironment, VariableEnvironment, privateEnvironment, Realm, Generator, Function);
+    }
+
+    public ExecutionContext UpdateGenerator(GeneratorInstance generator)
+    {
+        return new ExecutionContext(ScriptOrModule, LexicalEnvironment, VariableEnvironment, PrivateEnvironment, Realm, generator, Function);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-getthisenvironment
     /// </summary>
-    internal EnvironmentRecord GetThisEnvironment()
+    internal Environment GetThisEnvironment()
     {
         // The loop will always terminate because the list of environments always
         // ends with the global environment which has a this binding.
         var lex = LexicalEnvironment;
         while (true)
         {
-            if (lex != null)
+            if (lex is not null)
             {
                 if (lex.HasThisBinding())
                 {
@@ -65,5 +78,17 @@ internal readonly struct ExecutionContext
                 lex = lex._outerEnv;
             }
         }
+    }
+
+    internal GeneratorKind GetGeneratorKind()
+    {
+        if (Generator is null)
+        {
+            return GeneratorKind.NonGenerator;
+        }
+
+        // TODO If generator has an [[AsyncGeneratorState]] internal slot, return async.
+
+        return GeneratorKind.Sync;
     }
 }

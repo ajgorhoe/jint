@@ -1,5 +1,4 @@
 ﻿using BenchmarkDotNet.Attributes;
-using Esprima.Ast;
 
 namespace Jint.Benchmark;
 
@@ -7,7 +6,7 @@ namespace Jint.Benchmark;
 public abstract class SingleScriptBenchmark
 {
     private string _script;
-    private Script _parsedScript;
+    private Prepared<Script> _parsedScript;
 
     protected abstract string FileName { get; }
 
@@ -15,7 +14,7 @@ public abstract class SingleScriptBenchmark
     public void Setup()
     {
         _script = File.ReadAllText($"Scripts/{FileName}");
-        _parsedScript = Engine.PrepareScript(_script);
+        _parsedScript = Engine.PrepareScript(_script, strict: true);
     }
 
     [Benchmark]

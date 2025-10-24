@@ -1,6 +1,4 @@
-﻿using Esprima;
-using Jint.Native;
-using Jint.Native.ArrayBuffer;
+﻿using Jint.Native;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
@@ -10,15 +8,16 @@ namespace Jint.Tests.Test262;
 
 public abstract partial class Test262Test
 {
-    private Engine BuildTestExecutor(Test262File file)
+    private static Engine BuildTestExecutor(Test262File file)
     {
         var engine = new Engine(cfg =>
         {
             var relativePath = Path.GetDirectoryName(file.FileName);
             cfg.EnableModules(new Test262ModuleLoader(State.Test262Stream.Options.FileSystem, relativePath));
+            cfg.ExperimentalFeatures = ExperimentalFeature.All;
         });
 
-        if (file.Flags.IndexOf("raw") != -1)
+        if (file.Flags.Contains("raw"))
         {
             // nothing should be loaded
             return engine;
@@ -27,10 +26,10 @@ public abstract partial class Test262Test
         engine.Execute(State.Sources["assert.js"]);
         engine.Execute(State.Sources["sta.js"]);
 
-        engine.SetValue("print", new ClrFunctionInstance(engine, "print", (_, args) => TypeConverter.ToString(args.At(0))));
+        engine.SetValue("print", new ClrFunction(engine, "print", (_, args) => TypeConverter.ToString(args.At(0))));
 
         var o = engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
-        o.FastSetProperty("evalScript", new PropertyDescriptor(new ClrFunctionInstance(engine, "evalScript",
+        o.FastSetProperty("evalScript", new PropertyDescriptor(new ClrFunction(engine, "evalScript",
             (_, args) =>
             {
                 if (args.Length > 1)
@@ -38,14 +37,15 @@ public abstract partial class Test262Test
                     throw new Exception("only script parsing supported");
                 }
 
-                var options = new ParserOptions { AdaptRegexp = true, Tolerant = false };
-                var parser = new JavaScriptParser(options);
-                var script = parser.ParseScript(args.At(0).AsString());
+                var script = Engine.PrepareScript(args.At(0).AsString(), options: new ScriptPreparationOptions
+                {
+                    ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false },
+                });
 
                 return engine.Evaluate(script);
             }), true, true, true));
 
-        o.FastSetProperty("createRealm", new PropertyDescriptor(new ClrFunctionInstance(engine, "createRealm",
+        o.FastSetProperty("createRealm", new PropertyDescriptor(new ClrFunction(engine, "createRealm",
             (_, args) =>
             {
                 var realm = engine._host.CreateRealm();
@@ -53,15 +53,15 @@ public abstract partial class Test262Test
                 return realm.GlobalObject;
             }), true, true, true));
 
-        o.FastSetProperty("detachArrayBuffer", new PropertyDescriptor(new ClrFunctionInstance(engine, "detachArrayBuffer",
+        o.FastSetProperty("detachArrayBuffer", new PropertyDescriptor(new ClrFunction(engine, "detachArrayBuffer",
             (_, args) =>
             {
-                var buffer = (ArrayBufferInstance) args.At(0);
+                var buffer = (JsArrayBuffer) args.At(0);
                 buffer.DetachArrayBuffer();
                 return JsValue.Undefined;
             }), true, true, true));
 
-        o.FastSetProperty("gc", new PropertyDescriptor(new ClrFunctionInstance(engine, "gc",
+        o.FastSetProperty("gc", new PropertyDescriptor(new ClrFunction(engine, "gc",
             (_, _) =>
             {
                 GC.Collect();
@@ -76,7 +76,7 @@ public abstract partial class Test262Test
             engine.Execute(State.Sources[include]);
         }
 
-        if (file.Flags.IndexOf("async") != -1)
+        if (file.Flags.Contains("async"))
         {
             engine.Execute(State.Sources["doneprintHandle.js"]);
         }
@@ -88,12 +88,18 @@ public abstract partial class Test262Test
     {
         if (file.Type == ProgramType.Module)
         {
-            engine.AddModule(file.FileName, builder => builder.AddSource(file.Program));
-            engine.ImportModule(file.FileName);
+            var specifier = "./" + Path.GetFileName(file.FileName);
+            engine.Modules.Add(specifier, builder => builder.AddSource(file.Program));
+            engine.Modules.Import(specifier);
         }
         else
         {
-            engine.Execute(new JavaScriptParser().ParseScript(file.Program, source: file.FileName));
+            var script = Engine.PrepareScript(file.Program, source: file.FileName, options: new ScriptPreparationOptions
+            {
+                ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false },
+            });
+
+            engine.Execute(script);
         }
     }
 

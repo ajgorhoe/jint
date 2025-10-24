@@ -3,7 +3,9 @@ using System.Threading;
 
 namespace Jint.Constraints;
 
+#pragma warning disable CA1001
 internal sealed class TimeConstraint : Constraint
+#pragma warning restore CA1001
 {
     private readonly TimeSpan _timeout;
     private CancellationTokenSource? _cts;
@@ -17,7 +19,7 @@ internal sealed class TimeConstraint : Constraint
     {
         if (_cts?.IsCancellationRequested == true)
         {
-            ExceptionHelper.ThrowTimeoutException();
+            Throw.TimeoutException();
         }
     }
 

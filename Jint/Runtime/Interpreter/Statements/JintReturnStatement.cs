@@ -1,4 +1,3 @@
-using Esprima.Ast;
 using Jint.Native;
 using Jint.Runtime.Interpreter.Expressions;
 
@@ -24,6 +23,7 @@ internal sealed class JintReturnStatement : JintStatement<ReturnStatement>
 
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
-        return new Completion(CompletionType.Return, _argument?.GetValue(context) ?? Undefined.Instance, _statement);
+        var value = _argument is not null ? _argument.GetValue(context).Clone() : JsValue.Undefined;
+        return new Completion(CompletionType.Return, value, _statement);
     }
 }

@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Symbol;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -21,24 +20,36 @@ internal class IteratorPrototype : Prototype
 
     protected override void Initialize()
     {
-        var symbols = new SymbolDictionary(1)
+        var symbols = new SymbolDictionary(2)
         {
-            [GlobalSymbolRegistry.Iterator] = new(new ClrFunctionInstance(Engine, "[Symbol.iterator]", ToIterator, 0, PropertyFlag.Configurable), true, false, true),
+            [GlobalSymbolRegistry.Iterator] = new(new ClrFunction(Engine, "[Symbol.iterator]", ToIterator, 0, PropertyFlag.Configurable), PropertyFlag.NonEnumerable),
+            [GlobalSymbolRegistry.Dispose] = new(new ClrFunction(Engine, "[Symbol.dispose]", Dispose, 0, PropertyFlag.Configurable), PropertyFlag.NonEnumerable),
         };
         SetSymbols(symbols);
     }
 
-    private static JsValue ToIterator(JsValue thisObj, JsValue[] arguments)
+    private static JsValue ToIterator(JsValue thisObject, JsCallArguments arguments)
     {
-        return thisObj;
+        return thisObject;
     }
 
-    internal JsValue Next(JsValue thisObj, JsValue[] arguments)
+    private static JsValue Dispose(JsValue thisObject, JsCallArguments arguments)
     {
-        var iterator = thisObj as IteratorInstance;
+        var method = thisObject.AsObject().GetMethod(CommonProperties.Return);
+        if (method is not null)
+        {
+            method.Call(thisObject, arguments);
+        }
+
+        return Undefined;
+    }
+
+    internal JsValue Next(JsValue thisObject, JsCallArguments arguments)
+    {
+        var iterator = thisObject as IteratorInstance;
         if (iterator is null)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         iterator.TryIteratorStep(out var result);

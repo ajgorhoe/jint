@@ -1,4 +1,5 @@
-using Jint.Native.Array;
+using Jint.Native;
+using Jint.Runtime.Interop;
 
 namespace Jint.Tests.Runtime;
 
@@ -39,6 +40,22 @@ public class ArrayTests
     }
 
     [Fact]
+    public void ArrayPrototypeJoinWithCircularReference()
+    {
+        var result = _engine.Evaluate("Array.prototype.join.call((c = [1, 2, 3, 4], b = [1, 2, 3, 4], b[1] = c, c[1] = b, c))").AsString();
+
+        Assert.Equal("1,1,,3,4,3,4", result);
+    }
+
+    [Fact]
+    public void ArrayPrototypeToLocaleStringWithCircularReference()
+    {
+        var result = _engine.Evaluate("Array.prototype.toLocaleString.call((c = [1, 2, 3, 4], b = [1, 2, 3, 4], b[1] = c, c[1] = b, c))").AsString();
+
+        Assert.Equal("1,1,,3,4,3,4", result);
+    }
+
+    [Fact]
     public void EmptyStringKey()
     {
         var result = _engine.Evaluate("var x=[];x[\"\"]=8;x[\"\"];").AsNumber();
@@ -62,7 +79,7 @@ public class ArrayTests
     public void ArrayLengthFromInitialState()
     {
         var engine = new Engine();
-        var array = new ArrayInstance(engine, 0);
+        var array = new JsArray(engine);
         var length = (int) array.Length;
         Assert.Equal(0, length);
     }
@@ -106,22 +123,6 @@ public class ArrayTests
 
         _engine.Execute(code);
     }
-
-#if !NETCOREAPP
-        // this test case only triggers on older full framework where the is no checks for infinite comparisons
-        [Fact]
-        public void ArraySortShouldObeyExecutionConstraints()
-        {
-            const string script = @"
-                let cases = [5,5];
-                let latestCase = cases.sort((c1, c2) => c1 > c2 ? -1: 1);";
-
-            var engine = new Engine(options => options
-                .TimeoutInterval(TimeSpan.FromSeconds(1))
-            );
-            Assert.Throws<TimeoutException>(() => engine.Evaluate(script));
-        }
-#endif
 
     [Fact]
     public void ExtendingArrayAndInstanceOf()
@@ -222,5 +223,168 @@ public class ArrayTests
         Assert.True(engine.Evaluate("!proto1.hasOwnProperty(Symbol.iterator)").AsBoolean());
         Assert.True(engine.Evaluate("!iterator.hasOwnProperty(Symbol.iterator)").AsBoolean());
         Assert.True(engine.Evaluate("iterator[Symbol.iterator]() === iterator").AsBoolean());
+    }
+
+    [Fact]
+    public void ArrayFrom()
+    {
+        const string Script = @"
+            // Array.from -> Get -> [[Get]]
+            var get = [];
+            var p = new Proxy({length: 2, 0: '', 1: ''}, { get: function(o, k) { get.push(k); return o[k]; }});
+            Array.from(p);";
+
+        var engine = new Engine();
+        engine.Execute(Script);
+
+        Assert.True(engine.Evaluate("get[0] === Symbol.iterator").AsBoolean());
+        Assert.Equal("length,0,1", engine.Evaluate("get.slice(1) + ''").AsString());
+    }
+
+    [Fact]
+    public void ArrayFromStringUsingMapping()
+    {
+        var engine = new Engine();
+        var array = engine.Evaluate("Array.from('fff', (s) => Number.parseInt(s, 16))").AsArray();
+        Assert.Equal((uint) 3, array.Length);
+        Assert.Equal((uint) 15, array[0]);
+        Assert.Equal((uint) 15, array[1]);
+        Assert.Equal((uint) 15, array[2]);
+    }
+
+    [Fact]
+    public void Iteration()
+    {
+        const string Script = @"
+            // Array.prototype methods -> Get -> [[Get]]
+            var methods = ['copyWithin', 'every', 'fill', 'filter', 'find', 'findIndex', 'forEach',
+              'indexOf', 'join', 'lastIndexOf', 'map', 'reduce', 'reduceRight', 'some'];
+            var get;
+            var p = new Proxy({length: 2, 0: '', 1: ''}, { get: function(o, k) { get.push(k); return o[k]; }});
+            for(var i = 0; i < methods.length; i+=1) {
+              get = [];
+              Array.prototype[methods[i]].call(p, Function());
+              var actual = get + '';
+              var expected = (
+                methods[i] === 'fill' ? ""length"" :
+                methods[i] === 'every' ? ""length,0"" :
+                methods[i] === 'lastIndexOf' || methods[i] === 'reduceRight' ? ""length,1,0"" :
+                ""length,0,1"");
+
+              if (actual !== expected) {
+                throw methods[i] + ': ' + actual + ' !== ' + expected;
+              }
+            }
+            return true;";
+
+        var engine = new Engine();
+        Assert.True(engine.Evaluate(Script).AsBoolean());
+    }
+
+    [Fact]
+    public void Concat()
+    {
+        const string Script = @"
+            // Array.prototype.concat -> Get -> [[Get]]
+            var get = [];
+            var arr = [1];
+            arr.constructor = void undefined;
+            var p = new Proxy(arr, { get: function(o, k) { get.push(k); return o[k]; }});
+            Array.prototype.concat.call(p,p);";
+
+        var engine = new Engine();
+        engine.Execute(Script);
+
+        Assert.Equal("constructor", engine.Evaluate("get[0]"));
+        Assert.True(engine.Evaluate("get[1] === Symbol.isConcatSpreadable").AsBoolean());
+        Assert.Equal("length", engine.Evaluate("get[2]"));
+        Assert.Equal("0", engine.Evaluate("get[3]"));
+        Assert.True(engine.Evaluate("get[4] === get[1] && get[5] === get[2] && get[6] === get[3]").AsBoolean());
+        Assert.Equal(7, engine.Evaluate("get.length"));
+    }
+
+    [Fact]
+    public void ConcatHandlesHolesCorrectly()
+    {
+        const string Code = """
+           function colors(specifier) {
+             var n = specifier.length / 6 | 0, colors = new Array(n), i = 0;
+             while (i < n) colors[i] = "#" + specifier.slice(i * 6, ++i * 6);
+             return colors;
+           }
+        
+           new Array(3).concat("d8b365f5f5f55ab4ac","a6611adfc27d80cdc1018571").map(colors);
+        """;
+
+        var engine = new Engine();
+
+        var a = engine.Evaluate(Code).AsArray();
+
+        a.Length.Should().Be(5);
+        a[0].Should().Be(JsValue.Undefined);
+        a[1].Should().Be(JsValue.Undefined);
+        a[2].Should().Be(JsValue.Undefined);
+        a[3].Should().BeOfType<JsArray>().Which.Should().ContainInOrder("#d8b365", "#f5f5f5", "#5ab4ac");
+        a[4].Should().BeOfType<JsArray>().Which.Should().ContainInOrder("#a6611a", "#dfc27d", "#80cdc1", "#018571");
+    }
+
+    [Fact]
+    public void Shift()
+    {
+        const string Script = @"
+// Array.prototype.shift -> Get -> [[Get]]
+var get = [];
+var p = new Proxy([0,1,2,3], { get: function(o, k) { get.push(k); return o[k]; }});
+Array.prototype.shift.call(p);
+return get + '' === ""length,0,1,2,3"";";
+
+        var engine = new Engine();
+        Assert.True(engine.Evaluate(Script).AsBoolean());
+    }
+
+    [Fact]
+    public void ShouldBeAbleToInitFromArray()
+    {
+        var engine = new Engine();
+        var propertyDescriptors = new JsArray(engine, [1]).GetOwnProperties().ToArray();
+        Assert.Equal(2, propertyDescriptors.Length);
+        Assert.Equal("0", propertyDescriptors[0].Key);
+        Assert.Equal(1, propertyDescriptors[0].Value.Value);
+        Assert.Equal("length", propertyDescriptors[1].Key);
+        Assert.Equal(1, propertyDescriptors[1].Value.Value);
+    }
+
+    [Fact]
+    public void ArrayFromSortTest()
+    {
+        var item1 = new KeyValuePair<string, string>("Id1", "0020");
+        var item2 = new KeyValuePair<string, string>("Id2", "0001");
+
+        var engine = new Engine();
+        engine.SetValue("Root", new { Inner = new { Items = new[] { item1, item2 } } });
+
+        var result = engine.Evaluate("Array.from(Root.Inner.Items).sort((a, b) => a.Value === '0001' ? -1 : 1)").AsArray();
+
+        var enumerableResult = result
+            .Select(x => (KeyValuePair<string, string>) ((IObjectWrapper) x).Target)
+            .ToList();
+
+        enumerableResult.Should().HaveCount(2);
+        enumerableResult[0].Key.Should().Be(item2.Key);
+        enumerableResult[1].Key.Should().Be(item1.Key);
+    }
+
+    [Fact]
+    public void PopWrappedGenericList()
+    {
+        var engine = new Engine();
+        var list = new List<int> { 1, 2, 3 };
+        engine.SetValue("list", list);
+        var result = engine.Evaluate("list.pop()").AsNumber();
+
+        Assert.Equal(3, result);
+        Assert.Equal(2, list.Count);
+        Assert.Equal(1, list[0]);
+        Assert.Equal(2, list[1]);
     }
 }

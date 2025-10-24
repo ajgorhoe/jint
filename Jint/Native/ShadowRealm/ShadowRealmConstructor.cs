@@ -9,9 +9,9 @@ namespace Jint.Native.ShadowRealm;
 /// <summary>
 /// https://tc39.es/proposal-shadowrealm/#sec-properties-of-the-shadowRealm-constructor
 /// </summary>
-public sealed class ShadowRealmConstructor : FunctionInstance, IConstructor
+public sealed class ShadowRealmConstructor : Constructor
 {
-    private static readonly JsString _functionName = new JsString("ShadowRealm");
+    private static readonly JsString _functionName = new("ShadowRealm");
 
     internal ShadowRealmConstructor(
         Engine engine,
@@ -28,18 +28,12 @@ public sealed class ShadowRealmConstructor : FunctionInstance, IConstructor
 
     private ShadowRealmPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
-    {
-        ExceptionHelper.ThrowTypeError(_realm, "Constructor ShadowRealm requires 'new'");
-        return null;
-    }
-
-    public ShadowRealmInstance Construct()
+    public ShadowRealm Construct()
     {
         return Construct(PrototypeObject);
     }
 
-    private ShadowRealmInstance Construct(JsValue newTarget)
+    private ShadowRealm Construct(JsValue newTarget)
     {
         var realmRec = _engine._host.CreateRealm();
 
@@ -56,7 +50,7 @@ public sealed class ShadowRealmConstructor : FunctionInstance, IConstructor
                     realm: realmRec,
                     function: null);
 
-                return new ShadowRealmInstance(engine, context, realmRec);
+                return new ShadowRealm(engine, context, realmRec);
             },
             realmRec);
 
@@ -70,11 +64,11 @@ public sealed class ShadowRealmConstructor : FunctionInstance, IConstructor
     }
 
 
-    ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         return Construct(newTarget);

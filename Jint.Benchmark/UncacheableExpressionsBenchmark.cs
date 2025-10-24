@@ -1,8 +1,7 @@
 ﻿using System.Text;
+using System.Text.Json;
 using BenchmarkDotNet.Attributes;
 using Jint.Native;
-using Newtonsoft.Json;
-using Undefined = Jint.Native.Undefined;
 
 namespace Jint.Benchmark;
 
@@ -65,14 +64,10 @@ function output(d) {
 
         using (var stream = new MemoryStream())
         {
-            using (var writer = new StreamWriter(stream))
-            {
-                JsonSerializer.CreateDefault().Serialize(writer, doc);
-                writer.Flush();
+            JsonSerializer.Serialize(stream, doc);
 
-                var targetObjectJson = Encoding.UTF8.GetString(stream.ToArray());
-                targetObject = $"var d = {targetObjectJson};";
-            }
+            var targetObjectJson = Encoding.UTF8.GetString(stream.ToArray());
+            targetObject = $"var d = {targetObjectJson};";
         }
 
         CreateEngine(Arrow ? ArrowFunctionScript : NonArrowFunctionScript);
@@ -99,7 +94,7 @@ function output(d) {
         var call = engine.GetValue("output").TryCast<ICallable>();
         for (int i = 0; i < N; ++i)
         {
-            call.Call(Undefined.Instance, targetJsObject);
+            call.Call(JsValue.Undefined, targetJsObject);
         }
     }
 
@@ -108,6 +103,6 @@ function output(d) {
         engine = new Engine(InitializeEngine);
         engine.Execute(script);
         engine.Execute(targetObject);
-        targetJsObject = new[] {engine.GetValue("d")};
+        targetJsObject = [engine.GetValue("d")];
     }
 }

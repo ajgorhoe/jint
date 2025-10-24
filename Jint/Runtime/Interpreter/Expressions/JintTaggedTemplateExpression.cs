@@ -1,9 +1,6 @@
-using Esprima.Ast;
 using Jint.Native;
-using Jint.Native.Array;
 using Jint.Native.Object;
 using Jint.Runtime.Descriptors;
-using Jint.Runtime.References;
 
 namespace Jint.Runtime.Interpreter.Expressions;
 
@@ -13,13 +10,13 @@ internal sealed class JintTaggedTemplateExpression : JintExpression
 
     private JintExpression _tagIdentifier = null!;
     private JintTemplateLiteralExpression _quasi = null!;
+    private bool _initialized;
 
     public JintTaggedTemplateExpression(TaggedTemplateExpression expression) : base(expression)
     {
-        _initialized = false;
     }
 
-    protected override void Initialize(EvaluationContext context)
+    private void Initialize()
     {
         var taggedTemplateExpression = (TaggedTemplateExpression) _expression;
         _tagIdentifier = Build(taggedTemplateExpression.Tag);
@@ -29,16 +26,22 @@ internal sealed class JintTaggedTemplateExpression : JintExpression
 
     protected override object EvaluateInternal(EvaluationContext context)
     {
+        if (!_initialized)
+        {
+            Initialize();
+            _initialized = true;
+        }
+
         var engine = context.Engine;
 
         var identifier = _tagIdentifier.Evaluate(context);
         var tagger = engine.GetValue(identifier) as ICallable;
         if (tagger is null)
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, "Argument must be callable");
+            Throw.TypeError(engine.Realm, "Argument must be callable");
         }
 
-        var expressions = _quasi._expressions;
+        ref readonly var expressions = ref _quasi._expressions;
 
         var args = engine._jsValueArrayPool.RentArray(expressions.Length + 1);
 
@@ -50,8 +53,8 @@ internal sealed class JintTaggedTemplateExpression : JintExpression
             args[i + 1] = expressions[i].GetValue(context);
         }
 
-        var thisObject = identifier is Reference reference && reference.IsPropertyReference()
-            ? reference.GetBase()
+        var thisObject = identifier is Reference reference && reference.IsPropertyReference
+            ? reference.Base
             : JsValue.Undefined;
 
         var result = tagger.Call(thisObject, args);
@@ -64,7 +67,7 @@ internal sealed class JintTaggedTemplateExpression : JintExpression
     /// <summary>
     /// https://www.ecma-international.org/ecma-262/6.0/#sec-gettemplateobject
     /// </summary>
-    private ArrayInstance GetTemplateObject(EvaluationContext context)
+    private JsArray GetTemplateObject(EvaluationContext context)
     {
         var realm = context.Engine.Realm;
         var templateRegistry = realm._templateMap;
@@ -73,13 +76,15 @@ internal sealed class JintTaggedTemplateExpression : JintExpression
             return cached;
         }
 
-        var count = (uint) _quasi._templateLiteralExpression.Quasis.Count;
-        var template = context.Engine.Realm.Intrinsics.Array.ArrayCreate(count);
-        var rawObj = context.Engine.Realm.Intrinsics.Array.ArrayCreate(count);
-        for (uint i = 0; i < _quasi._templateLiteralExpression.Quasis.Count; ++i)
+        ref readonly var elements = ref _quasi._templateLiteralExpression.Quasis;
+        var count = (uint) elements.Count;
+
+        var template = new JsArray(context.Engine, count, length: count);
+        var rawObj = new JsArray(context.Engine, count, length: count);
+        for (uint i = 0; i < elements.Count; ++i)
         {
-            var templateElementValue = _quasi._templateLiteralExpression.Quasis[(int) i].Value;
-            template.SetIndexValue(i, templateElementValue.Cooked, updateLength: false);
+            var templateElementValue = elements[(int) i].Value;
+            template.SetIndexValue(i, templateElementValue.Cooked ?? JsValue.Undefined, updateLength: false);
             rawObj.SetIndexValue(i, templateElementValue.Raw, updateLength: false);
         }
 

@@ -5,7 +5,7 @@ namespace Jint.Native.Error;
 
 public class ErrorInstance : ObjectInstance
 {
-    internal ErrorInstance(Engine engine, ObjectClass objectClass = ObjectClass.Error)
+    private protected ErrorInstance(Engine engine, ObjectClass objectClass)
         : base(engine, objectClass)
     {
     }
@@ -24,6 +24,6 @@ public class ErrorInstance : ObjectInstance
 
     public override string ToString()
     {
-        return Engine.Realm.Intrinsics.Error.PrototypeObject.ToString(this, Arguments.Empty).ToObject().ToString();
+        return Engine.Realm.Intrinsics.Error.PrototypeObject.ToString(this, Arguments.Empty).ToObject()?.ToString() ?? "";
     }
 }

@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -31,8 +30,8 @@ internal sealed class ShadowRealmPrototype : Prototype
         {
             ["length"] = new PropertyDescriptor(0, PropertyFlag.Configurable),
             ["constructor"] = new PropertyDescriptor(_constructor, PropertyFlag.NonEnumerable),
-            ["evaluate"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "evaluate", Evaluate, 1, PropertyFlag.Configurable), propertyFlags),
-            ["importValue"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "importValue", ImportValue, 2, PropertyFlag.Configurable), propertyFlags),
+            ["evaluate"] = new PropertyDescriptor(new ClrFunction(Engine, "evaluate", Evaluate, 1, PropertyFlag.Configurable), propertyFlags),
+            ["importValue"] = new PropertyDescriptor(new ClrFunction(Engine, "importValue", ImportValue, 2, PropertyFlag.Configurable), propertyFlags),
         };
         SetProperties(properties);
 
@@ -43,51 +42,58 @@ internal sealed class ShadowRealmPrototype : Prototype
     /// <summary>
     /// https://tc39.es/proposal-shadowrealm/#sec-shadowrealm.prototype.evaluate
     /// </summary>
-    private JsValue Evaluate(JsValue thisObj, JsValue[] arguments)
+    private JsValue Evaluate(JsValue thisObject, JsCallArguments arguments)
     {
-        var shadowRealm = ValidateShadowRealmObject(thisObj);
+        var shadowRealm = ValidateShadowRealmObject(thisObject);
         var sourceText = arguments.At(0);
 
         if (!sourceText.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid source text " + sourceText);
+            Throw.TypeError(_realm, "Invalid source text " + sourceText);
         }
 
-        return shadowRealm.PerformShadowRealmEval(sourceText.AsString(), _realm);
+        var parserOptions = _engine.GetActiveParserOptions();
+        // Just like in the case of eval, we don't allow top level returns.
+        var adjustedParserOptions = parserOptions.AllowReturnOutsideFunction
+            ? parserOptions with { AllowReturnOutsideFunction = false }
+            : parserOptions;
+        var parser = _engine.GetParserFor(adjustedParserOptions);
+
+        return shadowRealm.PerformShadowRealmEval(sourceText.AsString(), parserOptions, parser, _realm);
     }
 
     /// <summary>
     /// https://tc39.es/proposal-shadowrealm/#sec-shadowrealm.prototype.importvalue
     /// </summary>
-    private JsValue ImportValue(JsValue thisObj, JsValue[] arguments)
+    private JsValue ImportValue(JsValue thisObject, JsCallArguments arguments)
     {
         var specifier = arguments.At(0);
         var exportName = arguments.At(1);
 
-        var O = ValidateShadowRealmObject(thisObj);
+        var O = ValidateShadowRealmObject(thisObject);
         var specifierString = TypeConverter.ToJsString(specifier);
         if (!specifier.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid specifier");
+            Throw.TypeError(_realm, "Invalid specifier");
         }
 
         if (!exportName.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid exportName");
+            Throw.TypeError(_realm, "Invalid exportName");
         }
 
         var callerRealm = _realm;
         return O.ShadowRealmImportValue(specifierString.ToString(), exportName.ToString(), callerRealm);
     }
 
-    private ShadowRealmInstance ValidateShadowRealmObject(JsValue thisObj)
+    private ShadowRealm ValidateShadowRealmObject(JsValue thisObject)
     {
-        var instance = thisObj as ShadowRealmInstance;
-        if (instance is null)
+        if (thisObject is ShadowRealm shadowRealm)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "object must be a ShadowRealm");
+            return shadowRealm;
         }
 
-        return instance;
+        Throw.TypeError(_realm, "object must be a ShadowRealm");
+        return default;
     }
 }

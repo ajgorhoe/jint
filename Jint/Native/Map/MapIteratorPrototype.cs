@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -24,7 +23,7 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
     {
         var properties = new PropertyDictionary(1, checkExistingKeys: false)
         {
-            [KnownKeys.Next] = new(new ClrFunctionInstance(Engine, "next", Next, 0, PropertyFlag.Configurable), true, false, true)
+            [KnownKeys.Next] = new(new ClrFunction(Engine, "next", Next, 0, PropertyFlag.Configurable), true, false, true)
         };
         SetProperties(properties);
 
@@ -35,7 +34,7 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
         SetSymbols(symbols);
     }
 
-    internal IteratorInstance ConstructEntryIterator(MapInstance map)
+    internal IteratorInstance ConstructEntryIterator(JsMap map)
     {
         var instance = new MapIterator(Engine, map)
         {
@@ -45,9 +44,9 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
         return instance;
     }
 
-    internal IteratorInstance ConstructKeyIterator(MapInstance map)
+    internal IteratorInstance ConstructKeyIterator(JsMap map)
     {
-        var instance = new IteratorInstance(Engine, map._map.Keys)
+        var instance = new IteratorInstance.EnumerableIterator(Engine, map._map.Keys)
         {
             _prototype = this
         };
@@ -55,9 +54,9 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
         return instance;
     }
 
-    internal IteratorInstance ConstructValueIterator(MapInstance map)
+    internal IteratorInstance ConstructValueIterator(JsMap map)
     {
-        var instance = new IteratorInstance(Engine, map._map.Values)
+        var instance = new IteratorInstance.EnumerableIterator(Engine, map._map.Values)
         {
             _prototype = this
         };
@@ -67,29 +66,29 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
 
     private sealed class MapIterator : IteratorInstance
     {
-        private readonly MapInstance _map;
+        private readonly OrderedDictionary<JsValue, JsValue> _map;
 
         private int _position;
 
-        public MapIterator(Engine engine, MapInstance map) : base(engine)
+        public MapIterator(Engine engine, JsMap map) : base(engine)
         {
-            _map = map;
+            _map = map._map;
             _position = 0;
         }
 
         public override bool TryIteratorStep(out ObjectInstance nextItem)
         {
-            if (_position < _map.GetSize())
+            if (_position < _map.Count)
             {
-                var key = _map._map.GetKey(_position);
-                var value = _map._map[key];
+                var key = _map.GetKey(_position);
+                var value = _map[key];
 
                 _position++;
-                nextItem = new KeyValueIteratorPosition(_engine, key, value);
+                nextItem = IteratorResult.CreateKeyValueIteratorPosition(_engine, key, value);
                 return true;
             }
 
-            nextItem = KeyValueIteratorPosition.Done(_engine);
+            nextItem = IteratorResult.CreateKeyValueIteratorPosition(_engine);
             return false;
         }
     }

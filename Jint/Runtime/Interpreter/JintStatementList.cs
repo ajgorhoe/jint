@@ -1,196 +1,226 @@
-using Esprima.Ast;
+﻿using System.Runtime.CompilerServices;
+using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Error;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Statements;
 
-namespace Jint.Runtime.Interpreter
+namespace Jint.Runtime.Interpreter;
+
+internal sealed class JintStatementList
 {
-    internal sealed class JintStatementList
+    private readonly record struct Pair(JintStatement Statement, JsValue? Value);
+
+    private readonly Statement? _statement;
+    private readonly NodeList<Statement> _statements;
+
+    private Pair[]? _jintStatements;
+    private bool _initialized;
+    private uint _index;
+    private readonly bool _generator;
+
+    public JintStatementList(IFunction function)
+        : this((FunctionBody) function.Body)
     {
-        private sealed class Pair
+        _generator = function.Generator;
+    }
+
+    public JintStatementList(BlockStatement blockStatement)
+        : this(blockStatement, blockStatement.Body)
+    {
+    }
+
+    public JintStatementList(Program program)
+        : this(null, program.Body)
+    {
+    }
+
+    public JintStatementList(Statement? statement, in NodeList<Statement> statements)
+    {
+        _statement = statement;
+        _statements = statements;
+    }
+
+    private void Initialize(EvaluationContext context)
+    {
+        var jintStatements = new Pair[_statements.Count];
+        for (var i = 0; i < jintStatements.Length; i++)
         {
-            internal JintStatement Statement = null!;
-            internal Completion? Value;
+            var esprimaStatement = _statements[i];
+            var statement = JintStatement.Build(esprimaStatement);
+            // When in debug mode, don't do FastResolve: Stepping requires each statement to be actually executed.
+            var value = context.DebugMode ? null : JintStatement.FastResolve(esprimaStatement);
+            jintStatements[i] = new Pair(statement, value);
         }
 
-        private readonly Statement? _statement;
-        private readonly NodeList<Statement> _statements;
+        _jintStatements = jintStatements;
+    }
 
-        private Pair[]? _jintStatements;
-        private bool _initialized;
-        private uint _index;
-        private readonly bool _generator;
 
-        public JintStatementList(IFunction function)
-            : this((BlockStatement) function.Body)
+    [MethodImpl(MethodImplOptions.AggressiveInlining | (MethodImplOptions) 512)]
+    public Completion Execute(EvaluationContext context)
+    {
+        if (!_initialized)
         {
-            _generator = function.Generator;
+            Initialize(context);
+            _initialized = true;
         }
 
-        public JintStatementList(BlockStatement blockStatement)
-            : this(blockStatement, blockStatement.Body)
+        if (_statement is not null)
         {
+            context.LastSyntaxElement = _statement;
+            context.RunBeforeExecuteStatementChecks(_statement);
         }
 
-        public JintStatementList(Program program)
-            : this(null, program.Body)
-        {
-        }
+        Completion c = Completion.Empty();
+        Completion sl = c;
 
-        public JintStatementList(Statement? statement, in NodeList<Statement> statements)
+        // The value of a StatementList is the value of the last value-producing item in the StatementList
+        var lastValue = JsEmpty.Instance;
+        var i = _index;
+        var temp = _jintStatements!;
+        try
         {
-            _statement = statement;
-            _statements = statements;
-        }
-
-        private void Initialize(EvaluationContext context)
-        {
-            var jintStatements = new Pair[_statements.Count];
-            for (var i = 0; i < jintStatements.Length; i++)
+            for (; i < (uint) temp.Length; i++)
             {
-                var esprimaStatement = _statements[i];
-                var statement = JintStatement.Build(esprimaStatement);
-                // When in debug mode, don't do FastResolve: Stepping requires each statement to be actually executed.
-                var value = context.DebugMode ? null : JintStatement.FastResolve(esprimaStatement);
-                jintStatements[i] = new Pair
+                ref readonly var pair = ref temp[i];
+
+                if (pair.Value is null)
                 {
-                    Statement = statement,
-                    Value = value
-                };
-            }
-
-            _jintStatements = jintStatements;
-        }
-
-        public Completion Execute(EvaluationContext context)
-        {
-            if (!_initialized)
-            {
-                Initialize(context);
-                _initialized = true;
-            }
-
-            if (_statement is not null)
-            {
-                context.LastSyntaxElement = _statement;
-                context.RunBeforeExecuteStatementChecks(_statement);
-            }
-
-            JintStatement? s = null;
-            Completion c = default;
-            Completion sl = c;
-
-            // The value of a StatementList is the value of the last value-producing item in the StatementList
-            JsValue? lastValue = null;
-            try
-            {
-                foreach (var pair in _jintStatements!)
-                {
-                    s = pair.Statement;
-                    c = pair.Value.GetValueOrDefault();
-                    if (c.Value is null)
+                    c = pair.Statement.Execute(context);
+                    if (context.Engine._error is not null)
                     {
-                        c = s.Execute(context);
-                    }
-
-                    if (c.Type != CompletionType.Normal)
-                    {
-                        return new Completion(c.Type, c.Value ?? sl.Value!, c._source);
-                    }
-                    sl = c;
-                    if (c.Value is not null)
-                    {
-                        lastValue = c.Value;
+                        c = HandleError(context.Engine, pair.Statement);
+                        break;
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                if (ex is JintException)
+                else
                 {
-                    return HandleException(context, ex, s);
+                    c = new Completion(CompletionType.Return, pair.Value, pair.Statement._statement);
                 }
 
+                if (_generator)
+                {
+                    if (context.Engine.ExecutionContext.Suspended)
+                    {
+                        _index = i + 1;
+                        c = new Completion(CompletionType.Return, c.Value, pair.Statement._statement);
+                        break;
+                    }
+                }
+
+                if (c.Type != CompletionType.Normal)
+                {
+                    return c.UpdateEmpty(sl.Value);
+                }
+
+                sl = c;
+                if (!c.Value.IsEmpty)
+                {
+                    lastValue = c.Value;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Reset();
+
+            if (ex is JintException)
+            {
+                c = HandleException(context, ex, temp[i].Statement);
+            }
+            else
+            {
                 throw;
             }
-
-            return new Completion(c.Type, lastValue ?? JsValue.Undefined, c._source!);
         }
 
-        private static Completion HandleException(EvaluationContext context, Exception exception, JintStatement? s)
-        {
-            if (exception is JavaScriptException javaScriptException)
-            {
-                return CreateThrowCompletion(s, javaScriptException);
-            }
-            if (exception is TypeErrorException typeErrorException)
-            {
-                var node = typeErrorException.Node ?? s!._statement;
-                return CreateThrowCompletion(context.Engine.Realm.Intrinsics.TypeError, typeErrorException, node);
-            }
-            if (exception is RangeErrorException rangeErrorException)
-            {
-                return CreateThrowCompletion(context.Engine.Realm.Intrinsics.RangeError, rangeErrorException, s!._statement);
-            }
+        return c.UpdateEmpty(lastValue).UpdateEmpty(JsValue.Undefined);
+    }
 
-            // should not happen unless there's problem in the engine
-            throw exception;
+    internal static Completion HandleException(EvaluationContext context, Exception exception, JintStatement? s)
+    {
+        return exception switch
+        {
+            JavaScriptException javaScriptException => CreateThrowCompletion(s, javaScriptException),
+            TypeErrorException typeErrorException => CreateThrowCompletion(context.Engine.Realm.Intrinsics.TypeError, typeErrorException, typeErrorException.Node ?? s!._statement),
+            RangeErrorException rangeErrorException => CreateThrowCompletion(context.Engine.Realm.Intrinsics.RangeError, rangeErrorException, s!._statement),
+            _ => throw exception
+        };
+    }
+
+    internal static Completion HandleError(Engine engine, JintStatement? s)
+    {
+        var error = engine._error!;
+        engine._error = null;
+        return CreateThrowCompletion(error.ErrorConstructor, error.Message, engine._lastSyntaxElement ?? s!._statement);
+    }
+
+    private static Completion CreateThrowCompletion(ErrorConstructor errorConstructor, string? message, Node s)
+    {
+        var error = errorConstructor.Construct(message);
+        return new Completion(CompletionType.Throw, error, s);
+    }
+
+    private static Completion CreateThrowCompletion(ErrorConstructor errorConstructor, Exception e, Node s)
+    {
+        var error = errorConstructor.Construct(e.Message);
+        return new Completion(CompletionType.Throw, error, s);
+    }
+
+    private static Completion CreateThrowCompletion(JintStatement? s, JavaScriptException v)
+    {
+        Node source = s!._statement;
+        if (v.Location != default)
+        {
+            source = AstExtensions.CreateLocationNode(v.Location);
         }
 
-        private static Completion CreateThrowCompletion(ErrorConstructor errorConstructor, Exception e, SyntaxElement s)
-        {
-            var error = errorConstructor.Construct(e.Message);
-            return new Completion(CompletionType.Throw, error, s);
-        }
+        return new Completion(CompletionType.Throw, v.Error, source);
+    }
 
-        private static Completion CreateThrowCompletion(JintStatement? s, JavaScriptException v)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-blockdeclarationinstantiation
+    /// </summary>
+    internal static void BlockDeclarationInstantiation(DeclarativeEnvironment env, DeclarationCache declarations)
+    {
+        var privateEnv = env._engine.ExecutionContext.PrivateEnvironment;
+
+        var list = declarations.Declarations;
+        var dictionary = env._dictionary ??= new HybridDictionary<Binding>(list.Count, checkExistingKeys: !declarations.AllLexicalScoped);
+        dictionary.EnsureCapacity(list.Count);
+
+        for (var i = 0; i < list.Count; i++)
         {
-            SyntaxElement source = s!._statement;
-            if (v.Location != default)
+            var declaration = list[i];
+            foreach (var bn in declaration.BoundNames)
             {
-                source = EsprimaExtensions.CreateLocationNode(v.Location);
-            }
-
-            return new Completion(CompletionType.Throw, v.Error, source);
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-blockdeclarationinstantiation
-        /// </summary>
-        internal static void BlockDeclarationInstantiation(
-            Engine engine,
-            EnvironmentRecord env,
-            List<Declaration> declarations)
-        {
-            var privateEnv = env._engine.ExecutionContext.PrivateEnvironment;
-            var boundNames = new List<string>();
-            for (var i = 0; i < declarations.Count; i++)
-            {
-                var d = declarations[i];
-                boundNames.Clear();
-                d.GetBoundNames(boundNames);
-                for (var j = 0; j < boundNames.Count; j++)
+                if (declaration.IsConstantDeclaration)
                 {
-                    var dn = boundNames[j];
-                    if (d is VariableDeclaration { Kind: VariableDeclarationKind.Const })
-                    {
-                        env.CreateImmutableBinding(dn, strict: true);
-                    }
-                    else
-                    {
-                        env.CreateMutableBinding(dn, canBeDeleted: false);
-                    }
+                    dictionary.CreateImmutableBinding(bn, strict: true);
                 }
-
-                if (d is FunctionDeclaration functionDeclaration)
+                else
                 {
-                    var definition = new JintFunctionDefinition(functionDeclaration);
-                    var fn = definition.Name!;
-                    var fo = env._engine.Realm.Intrinsics.Function.InstantiateFunctionObject(definition, env, privateEnv);
-                    env.InitializeBinding(fn, fo);
+                    dictionary.CreateMutableBinding(bn, canBeDeleted: false);
                 }
             }
+
+            if (declaration.Declaration is FunctionDeclaration functionDeclaration)
+            {
+                var definition = new JintFunctionDefinition(functionDeclaration);
+                var fn = definition.Name!;
+                var fo = env._engine.Realm.Intrinsics.Function.InstantiateFunctionObject(definition, env, privateEnv);
+                env.InitializeBinding(fn, fo, DisposeHint.Normal);
+            }
         }
+
+        dictionary.CheckExistingKeys = true;
+    }
+
+    public bool Completed => _index == _jintStatements?.Length;
+
+    public void Reset()
+    {
+        _index = 0;
     }
 }

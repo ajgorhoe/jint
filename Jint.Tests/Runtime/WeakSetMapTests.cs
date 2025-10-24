@@ -1,7 +1,4 @@
 using Jint.Native;
-using Jint.Native.Object;
-using Jint.Native.WeakMap;
-using Jint.Native.WeakSet;
 using Jint.Runtime;
 
 namespace Jint.Tests.Runtime;
@@ -32,8 +29,7 @@ public class WeakSetMapTests
         100.04,
         double.NaN,
         "hello",
-        true,
-        new JsSymbol("hello")
+        true
     };
 
     [Theory]
@@ -41,10 +37,10 @@ public class WeakSetMapTests
     public void WeakSetAddShouldThrowForPrimitiveKey(JsValue key)
     {
         var engine = new Engine();
-        var weakSet = new WeakSetInstance(engine);
+        var weakSet = new JsWeakSet(engine);
 
         var e = Assert.Throws<JavaScriptException>(() => weakSet.WeakSetAdd(key));
-        Assert.StartsWith("WeakSet value must be an object, got ", e.Message);
+        Assert.StartsWith("WeakSet value must be an object or symbol, got ", e.Message);
 
         Assert.False(weakSet.WeakSetHas(key));
     }
@@ -54,9 +50,9 @@ public class WeakSetMapTests
     public void WeakMapSetShouldThrowForPrimitiveKey(JsValue key)
     {
         var engine = new Engine();
-        var weakMap = new WeakMapInstance(engine);
+        var weakMap = new JsWeakMap(engine);
 
-        var e = Assert.Throws<JavaScriptException>(() => weakMap.WeakMapSet(key, new ObjectInstance(engine)));
+        var e = Assert.Throws<JavaScriptException>(() => weakMap.WeakMapSet(key, new JsObject(engine)));
         Assert.StartsWith("WeakMap key must be an object, got ", e.Message);
 
         Assert.False(weakMap.WeakMapHas(key));
@@ -65,7 +61,7 @@ public class WeakSetMapTests
     [Fact]
     public void WeakSetWithInteropObject()
     {
-        var engine = new Engine();
+        var engine = new Engine(options => options.Interop.TrackObjectWrapperIdentity = true);
 
         engine.SetValue("context", new { Item = new Item { Value = "Test" } });
 
@@ -91,7 +87,7 @@ public class WeakSetMapTests
         parent.Child = child;
         child.Parent = parent;
 
-        var engine = new Engine();
+        var engine = new Engine(options => options.Interop.TrackObjectWrapperIdentity = true);
 
         engine.SetValue("context", new { Parent = parent });
 

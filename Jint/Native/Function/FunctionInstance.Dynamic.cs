@@ -1,24 +1,26 @@
-using Esprima;
-using Esprima.Ast;
 using Jint.Native.Object;
 using Jint.Runtime;
+using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter;
+using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Native.Function;
 
-public partial class FunctionInstance
+#pragma warning disable MA0049
+public partial class Function
+#pragma warning restore MA0049
 {
     private static readonly JsString _functionNameAnonymous = new JsString("anonymous");
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-createdynamicfunction
     /// </summary>
-    internal FunctionInstance CreateDynamicFunction(
+    internal Function CreateDynamicFunction(
         ObjectInstance constructor,
         JsValue newTarget,
         FunctionKind kind,
-        JsValue[] args)
+        JsCallArguments arguments)
     {
         // TODO var callerContext = _engine.GetExecutionContext(1);
         var callerContext = _engine.ExecutionContext;
@@ -42,31 +44,35 @@ public partial class FunctionInstance
                 fallbackProto = static intrinsics => intrinsics.AsyncFunction.PrototypeObject;
                 break;
             case FunctionKind.Generator:
+                fallbackProto = static intrinsics => intrinsics.GeneratorFunction.PrototypeObject;
+                break;
             case FunctionKind.AsyncGenerator:
+                fallbackProto = static intrinsics => intrinsics.AsyncGeneratorFunction.PrototypeObject;
+                break;
             default:
-                ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                 break;
         }
 
-        var argCount = args.Length;
+        var argCount = arguments.Length;
         var p = "";
         var body = "";
 
         if (argCount == 1)
         {
-            body = TypeConverter.ToString(args[0]);
+            body = TypeConverter.ToString(arguments[0]);
         }
         else if (argCount > 1)
         {
-            var firstArg = args[0];
+            var firstArg = arguments[0];
             p = TypeConverter.ToString(firstArg);
             for (var k = 1; k < argCount - 1; k++)
             {
-                var nextArg = args[k];
+                var nextArg = arguments[k];
                 p += "," + TypeConverter.ToString(nextArg);
             }
 
-            body = TypeConverter.ToString(args[argCount - 1]);
+            body = TypeConverter.ToString(arguments[argCount - 1]);
         }
 
         IFunction? function = null;
@@ -87,10 +93,10 @@ public partial class FunctionInstance
                         functionExpression = "async function f(){}";
                         break;
                     case FunctionKind.AsyncGenerator:
-                        ExceptionHelper.ThrowNotImplementedException("Async generators not implemented");
+                        functionExpression = "async function* f(){}";
                         break;
                     default:
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                        Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                         break;
                 }
             }
@@ -108,14 +114,14 @@ public partial class FunctionInstance
                         functionExpression = "function* f(";
                         break;
                     case FunctionKind.AsyncGenerator:
-                        ExceptionHelper.ThrowNotImplementedException("Async generators not implemented");
+                        functionExpression = "async function* f(";
                         break;
                     default:
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                        Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                         break;
                 }
 
-                if (p.IndexOf('/') != -1)
+                if (p.Contains('/'))
                 {
                     // ensure comments don't screw up things
                     functionExpression += "\n" + p + "\n";
@@ -127,7 +133,7 @@ public partial class FunctionInstance
 
                 functionExpression += ")";
 
-                if (body.IndexOf('/') != -1)
+                if (body.Contains('/'))
                 {
                     // ensure comments don't screw up things
                     functionExpression += "{\n" + body + "\n}";
@@ -138,33 +144,37 @@ public partial class FunctionInstance
                 }
             }
 
-            JavaScriptParser parser = new(new ParserOptions { Tolerant = false });
-            function = (IFunction) parser.ParseScript(functionExpression).Body[0];
+            var parserOptions = _engine.GetActiveParserOptions();
+            if (!parserOptions.AllowReturnOutsideFunction)
+            {
+                parserOptions = parserOptions with { AllowReturnOutsideFunction = true };
+            }
+            Parser parser = new(parserOptions);
+            function = (IFunction) parser.ParseScriptGuarded(callerRealm, functionExpression, strict: _engine._isStrict).Body[0];
         }
-        catch (ParserException ex)
+        catch (ParseErrorException ex)
         {
-            ExceptionHelper.ThrowSyntaxError(_engine.ExecutionContext.Realm, ex.Message);
+            Throw.SyntaxError(_engine.ExecutionContext.Realm, ex.Message);
         }
 
         var proto = GetPrototypeFromConstructor(newTarget, fallbackProto);
         var realmF = _realm;
         var scope = realmF.GlobalEnv;
-        PrivateEnvironmentRecord? privateScope = null;
+        PrivateEnvironment? privateEnv = null;
 
         var definition = new JintFunctionDefinition(function);
-        FunctionInstance F = OrdinaryFunctionCreate(proto, definition, function.Strict ? FunctionThisMode.Strict : FunctionThisMode.Global, scope, privateScope);
+        Function F = OrdinaryFunctionCreate(proto, definition, function.IsStrict() ? FunctionThisMode.Strict : FunctionThisMode.Global, scope, privateEnv);
         F.SetFunctionName(_functionNameAnonymous, force: true);
 
         if (kind == FunctionKind.Generator)
         {
-            ExceptionHelper.ThrowNotImplementedException("generators not implemented");
+            var prototype = OrdinaryObjectCreate(_engine, _realm.Intrinsics.GeneratorFunction.PrototypeObject.PrototypeObject);
+            F.DefinePropertyOrThrow(CommonProperties.Prototype, new PropertyDescriptor(prototype, PropertyFlag.Writable));
         }
         else if (kind == FunctionKind.AsyncGenerator)
         {
-            // TODO
-            // Let prototype be ! OrdinaryObjectCreate(%AsyncGeneratorFunction.prototype.prototype%).
-            // Perform DefinePropertyOrThrow(F, "prototype", PropertyDescriptor { [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false }).
-            ExceptionHelper.ThrowNotImplementedException("async generators not implemented");
+            var prototype = OrdinaryObjectCreate(_engine, _realm.Intrinsics.AsyncGeneratorFunction.PrototypeObject.PrototypeObject);
+            F.DefinePropertyOrThrow(CommonProperties.Prototype, new PropertyDescriptor(prototype, PropertyFlag.Writable));
         }
         else if (kind == FunctionKind.Normal)
         {
@@ -177,18 +187,22 @@ public partial class FunctionInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-ordinaryfunctioncreate
     /// </summary>
-    internal ScriptFunctionInstance OrdinaryFunctionCreate(
+    internal ScriptFunction OrdinaryFunctionCreate(
         ObjectInstance functionPrototype,
         JintFunctionDefinition function,
         FunctionThisMode thisMode,
-        EnvironmentRecord scope,
-        PrivateEnvironmentRecord? privateScope)
+        Environment scope,
+        PrivateEnvironment? privateScope)
     {
-        return new ScriptFunctionInstance(
+        return new ScriptFunction(
             _engine,
             function,
             scope,
             thisMode,
-            functionPrototype) { _privateEnvironment = privateScope, _realm = _realm };
+            functionPrototype)
+        {
+            _privateEnvironment = privateScope,
+            _realm = _realm,
+        };
     }
 }

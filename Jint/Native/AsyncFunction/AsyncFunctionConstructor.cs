@@ -8,7 +8,7 @@ namespace Jint.Native.AsyncFunction;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-async-function-constructor
 /// </summary>
-internal sealed class AsyncFunctionConstructor : FunctionInstance, IConstructor
+internal sealed class AsyncFunctionConstructor : Constructor
 {
     private static readonly JsString _functionName = new("AsyncFunction");
 
@@ -22,14 +22,12 @@ internal sealed class AsyncFunctionConstructor : FunctionInstance, IConstructor
 
     public AsyncFunctionPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return Construct(arguments, thisObject);
     }
 
-    ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
-
-    private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         var function = CreateDynamicFunction(
             this,

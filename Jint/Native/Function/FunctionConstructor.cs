@@ -3,120 +3,134 @@ using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter;
+using Environment = Jint.Runtime.Environments.Environment;
 
-namespace Jint.Native.Function
+namespace Jint.Native.Function;
+
+/// <summary>
+/// https://tc39.es/ecma262/#sec-function-constructor
+/// </summary>
+public sealed class FunctionConstructor : Constructor
 {
-    /// <summary>
-    /// https://tc39.es/ecma262/#sec-function-constructor
-    /// </summary>
-    public sealed class FunctionConstructor : FunctionInstance, IConstructor
+    private static readonly JsString _functionName = new JsString("Function");
+
+    internal FunctionConstructor(
+        Engine engine,
+        Realm realm,
+        ObjectPrototype objectPrototype)
+        : base(engine, realm, _functionName)
     {
-        private static readonly JsString _functionName = new JsString("Function");
+        PrototypeObject = new FunctionPrototype(engine, realm, objectPrototype);
+        _prototype = PrototypeObject;
+        _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
+        _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
+    }
 
-        internal FunctionConstructor(
-            Engine engine,
-            Realm realm,
-            ObjectPrototype objectPrototype)
-            : base(engine, realm, _functionName)
+    internal FunctionPrototype PrototypeObject { get; }
+
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
+    {
+        return Construct(arguments, thisObject);
+    }
+
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
+    {
+        var function = CreateDynamicFunction(
+            this,
+            newTarget,
+            FunctionKind.Normal,
+            arguments);
+
+        return function;
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiatefunctionobject
+    /// </summary>
+    internal Function InstantiateFunctionObject(
+        JintFunctionDefinition functionDeclaration,
+        Environment scope,
+        PrivateEnvironment? privateEnv)
+    {
+        var function = functionDeclaration.Function;
+        if (!function.Generator)
         {
-            PrototypeObject = new FunctionPrototype(engine, realm, objectPrototype);
-            _prototype = PrototypeObject;
-            _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
-            _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
+            return function.Async
+                ? InstantiateAsyncFunctionObject(functionDeclaration, scope, privateEnv)
+                : InstantiateOrdinaryFunctionObject(functionDeclaration, scope, privateEnv);
         }
-
-        public FunctionPrototype PrototypeObject { get; }
-
-        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        else
         {
-            return Construct(arguments, thisObject);
+            return InstantiateGeneratorFunctionObject(functionDeclaration, scope, privateEnv);
         }
+    }
 
-        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiateasyncfunctionobject
+    /// </summary>
+    private ScriptFunction InstantiateAsyncFunctionObject(
+        JintFunctionDefinition functionDeclaration,
+        Environment env,
+        PrivateEnvironment? privateEnv)
+    {
+        var F = OrdinaryFunctionCreate(
+            _realm.Intrinsics.AsyncFunction.PrototypeObject,
+            functionDeclaration,
+            functionDeclaration.ThisMode,
+            env,
+            privateEnv);
 
-        private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
-        {
-            var function = CreateDynamicFunction(
-                this,
-                newTarget,
-                FunctionKind.Normal,
-                arguments);
+        F.SetFunctionName(functionDeclaration.Name ?? "default");
 
-            return function;
-        }
+        return F;
+    }
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiatefunctionobject
-        /// </summary>
-        internal FunctionInstance InstantiateFunctionObject(
-            JintFunctionDefinition functionDeclaration,
-            EnvironmentRecord scope,
-            PrivateEnvironmentRecord? privateScope)
-        {
-            var function = functionDeclaration.Function;
-            if (!function.Generator)
-            {
-                return function.Async
-                    ? InstantiateAsyncFunctionObject(functionDeclaration, scope, privateScope)
-                    : InstantiateOrdinaryFunctionObject(functionDeclaration, scope, privateScope);
-            }
-            else
-            {
-                return InstantiateGeneratorFunctionObject(functionDeclaration, scope, privateScope);
-            }
-        }
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiateordinaryfunctionobject
+    /// </summary>
+    private ScriptFunction InstantiateOrdinaryFunctionObject(
+        JintFunctionDefinition functionDeclaration,
+        Environment env,
+        PrivateEnvironment? privateEnv)
+    {
+        var F = OrdinaryFunctionCreate(
+            _realm.Intrinsics.Function.PrototypeObject,
+            functionDeclaration,
+            functionDeclaration.ThisMode,
+            env,
+            privateEnv);
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiateasyncfunctionobject
-        /// </summary>
-        private FunctionInstance InstantiateAsyncFunctionObject(
-            JintFunctionDefinition functionDeclaration,
-            EnvironmentRecord env,
-            PrivateEnvironmentRecord? privateEnv)
-        {
-            var F = OrdinaryFunctionCreate(
-                _realm.Intrinsics.AsyncFunction.PrototypeObject,
-                functionDeclaration,
-                functionDeclaration.ThisMode,
-                env,
-                privateEnv);
+        var name = functionDeclaration.Name ?? "default";
+        F.SetFunctionName(name);
+        F.MakeConstructor();
+        return F;
+    }
 
-            F.SetFunctionName(functionDeclaration.Name ?? "default");
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiategeneratorfunctionobject
+    /// </summary>
+    private ScriptFunction InstantiateGeneratorFunctionObject(
+        JintFunctionDefinition functionDeclaration,
+        Environment scope,
+        PrivateEnvironment? privateScope)
+    {
+        var thisMode = functionDeclaration.Strict || _engine._isStrict
+            ? FunctionThisMode.Strict
+            : FunctionThisMode.Global;
 
-            return F;
-        }
+        var name = functionDeclaration.Function.Id?.Name ?? "default";
+        var F = OrdinaryFunctionCreate(
+            _realm.Intrinsics.GeneratorFunction.PrototypeObject,
+            functionDeclaration,
+            thisMode,
+            scope,
+            privateScope);
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiateordinaryfunctionobject
-        /// </summary>
-        private FunctionInstance InstantiateOrdinaryFunctionObject(
-            JintFunctionDefinition functionDeclaration,
-            EnvironmentRecord env,
-            PrivateEnvironmentRecord? privateEnv)
-        {
-            var F = OrdinaryFunctionCreate(
-                _realm.Intrinsics.Function.PrototypeObject,
-                functionDeclaration,
-                functionDeclaration.ThisMode,
-                env,
-                privateEnv);
+        F.SetFunctionName(name);
 
-            var name = functionDeclaration.Name ?? "default";
-            F.SetFunctionName(name);
-            F.MakeConstructor();
-            return F;
-        }
+        var prototype = OrdinaryObjectCreate(_engine, _realm.Intrinsics.GeneratorFunction.PrototypeObject.PrototypeObject);
+        F.DefinePropertyOrThrow(CommonProperties.Prototype, new PropertyDescriptor(prototype, PropertyFlag.Writable));
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-runtime-semantics-instantiategeneratorfunctionobject
-        /// </summary>
-        private FunctionInstance InstantiateGeneratorFunctionObject(
-            JintFunctionDefinition functionDeclaration,
-            EnvironmentRecord scope,
-            PrivateEnvironmentRecord? privateScope)
-        {
-            // TODO generators
-            return InstantiateOrdinaryFunctionObject(functionDeclaration, scope, privateScope);
-        }
+        return F;
     }
 }

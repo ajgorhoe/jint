@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -30,7 +29,7 @@ internal sealed class WeakRefPrototype : Prototype
         var properties = new PropertyDictionary(5, checkExistingKeys: false)
         {
             ["constructor"] = new(_constructor, PropertyFlag.NonEnumerable),
-            ["deref"] = new(new ClrFunctionInstance(Engine, "deref", Deref, 0, PropertyFlag.Configurable), propertyFlags)
+            ["deref"] = new(new ClrFunction(Engine, "deref", Deref, 0, PropertyFlag.Configurable), propertyFlags)
         };
         SetProperties(properties);
 
@@ -41,14 +40,14 @@ internal sealed class WeakRefPrototype : Prototype
         SetSymbols(symbols);
     }
 
-    private JsValue Deref(JsValue thisObj, JsValue[] arguments)
+    private JsValue Deref(JsValue thisObject, JsCallArguments arguments)
     {
-        var weakRef = thisObj as WeakRefInstance;
-        if (weakRef is null)
+        if (thisObject is JsWeakRef weakRef)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "object must be a WeakRef");
+            return weakRef.WeakRefDeref();
         }
 
-        return weakRef.WeakRefDeref();
+        Throw.TypeError(_realm, "object must be a WeakRef");
+        return default;
     }
 }

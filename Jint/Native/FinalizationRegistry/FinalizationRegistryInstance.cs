@@ -4,7 +4,7 @@ using Jint.Runtime;
 
 namespace Jint.Native.FinalizationRegistry;
 
-internal sealed record Cell(JsValue WeakRefTarget, JsValue HeldValue, ObjectInstance? UnregisterToken);
+internal sealed record Cell(JsValue WeakRefTarget, JsValue HeldValue, JsValue? UnregisterToken);
 
 internal sealed class FinalizationRegistryInstance : ObjectInstance
 {
@@ -19,7 +19,7 @@ internal sealed class FinalizationRegistryInstance : ObjectInstance
         _callable = engine._host.MakeJobCallBack(cleanupCallback);
     }
 
-    public void CleanupFinalizationRegistry(ICallable? callback)
+    public static void CleanupFinalizationRegistry(ICallable? callback)
     {
     }
 
@@ -60,7 +60,9 @@ internal sealed class FinalizationRegistryInstance : ObjectInstance
             _callable = callable;
         }
 
+#pragma warning disable MA0055
         ~Observer()
+#pragma warning restore MA0055
         {
             _callable.Callback.Call(Undefined);
         }

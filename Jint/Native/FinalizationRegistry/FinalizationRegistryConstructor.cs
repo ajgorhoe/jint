@@ -8,7 +8,7 @@ namespace Jint.Native.FinalizationRegistry;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-finalization-registry-constructor
 /// </summary>
-internal sealed class FinalizationRegistryConstructor : FunctionInstance, IConstructor
+internal sealed class FinalizationRegistryConstructor : Constructor
 {
     private static readonly JsString _functionName = new("FinalizationRegistry");
 
@@ -26,24 +26,22 @@ internal sealed class FinalizationRegistryConstructor : FunctionInstance, IConst
 
     public FinalizationRegistryPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return Construct(arguments, thisObject);
     }
 
-    ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
-
-    private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var cleanupCallback = arguments.At(0);
         if (cleanupCallback is not ICallable callable)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "cleanup must be callable");
+            Throw.TypeError(_realm, "cleanup must be callable");
             return null;
         }
 

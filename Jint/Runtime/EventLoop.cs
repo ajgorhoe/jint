@@ -1,7 +1,8 @@
-namespace Jint.Runtime
+using System.Collections.Concurrent;
+
+namespace Jint.Runtime;
+
+internal sealed record EventLoop
 {
-    internal sealed record EventLoop
-    {
-        internal readonly Queue<Action> Events = new();
-    }
+    internal readonly ConcurrentQueue<Action> Events = new();
 }

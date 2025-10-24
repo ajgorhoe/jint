@@ -8,7 +8,7 @@ namespace Jint.Native.WeakRef;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-weak-ref-constructor
 /// </summary>
-internal sealed class WeakRefConstructor : FunctionInstance, IConstructor
+internal sealed class WeakRefConstructor : Constructor
 {
     private static readonly JsString _functionName = new("WeakRef");
 
@@ -27,30 +27,24 @@ internal sealed class WeakRefConstructor : FunctionInstance, IConstructor
 
     private WeakRefPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
-    {
-        ExceptionHelper.ThrowTypeError(_realm, "Constructor WeakRef requires 'new'");
-        return null;
-    }
-
-    ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var target = arguments.At(0);
 
-        if (target is not ObjectInstance)
+        if (!target.CanBeHeldWeakly(_engine.GlobalSymbolRegistry))
         {
-            ExceptionHelper.ThrowTypeError(_realm, "WeakRef: target must be an object");
+            Throw.TypeError(_realm, "WeakRef: target must be an object or symbol");
         }
 
         var weakRef = OrdinaryCreateFromConstructor(
             newTarget,
             static intrinsics => intrinsics.WeakRef.PrototypeObject,
-            static (Engine engine, Realm _, object? t) => new WeakRefInstance(engine, (ObjectInstance) t!),
+            static (engine, _, target) => new JsWeakRef(engine, target!),
             target);
 
         _engine.AddToKeptObjects(target);

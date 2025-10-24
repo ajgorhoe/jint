@@ -1,9 +1,7 @@
-using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Function;
-using Jint.Native.Object;
-using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
+using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Runtime.Interpreter.Statements;
 
@@ -22,7 +20,7 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
     {
         if (_statement.Declaration is ClassDeclaration classDeclaration)
         {
-            _classDefinition = new ClassDefinition(className: classDeclaration.Id?.Name, classDeclaration.SuperClass, classDeclaration.Body);
+            _classDefinition = new ClassDefinition(className: classDeclaration.Id?.Name ?? "default", classDeclaration.SuperClass, classDeclaration.Body);
         }
         else if (_statement.Declaration is FunctionDeclaration functionDeclaration)
         {
@@ -44,6 +42,13 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
         var env = context.Engine.ExecutionContext.LexicalEnvironment;
+        if (env.HasBinding("*default*"))
+        {
+            // We already have the default binding.
+            // Initialized in SourceTextModule.InitializeEnvironment.
+            return Completion.Empty();
+        }
+
         JsValue value;
         if (_classDefinition is not null)
         {
@@ -52,7 +57,7 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
             if (classBinding != null)
             {
                 env.CreateMutableBinding(classBinding);
-                env.InitializeBinding(classBinding, value);
+                env.InitializeBinding(classBinding, value, DisposeHint.Normal);
             }
         }
         else if (_functionDeclaration is not null)
@@ -68,27 +73,28 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
             value = _simpleExpression!.GetValue(context);
         }
 
-        if (value is ObjectInstance oi && !oi.HasOwnProperty("name"))
+        if (value is Function functionInstance
+            && string.IsNullOrWhiteSpace(functionInstance._nameDescriptor?._value?.ToString()))
         {
-            oi.SetFunctionName("default");
+            functionInstance.SetFunctionName("default");
         }
 
-        env.InitializeBinding("*default*", value);
+        env.InitializeBinding("*default*", value, DisposeHint.Normal);
         return Completion.Empty();
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-initializeboundname
     /// </summary>
-    private void InitializeBoundName(string name, JsValue value, EnvironmentRecord? environment)
+    private static void InitializeBoundName(string name, JsValue value, Environment? environment)
     {
         if (environment is not null)
         {
-            environment.InitializeBinding(name, value);
+            environment.InitializeBinding(name, value, DisposeHint.Normal);
         }
         else
         {
-            ExceptionHelper.ThrowNotImplementedException();
+            Throw.NotImplementedException();
         }
     }
 }

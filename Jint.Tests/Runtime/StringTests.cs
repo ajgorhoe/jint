@@ -55,4 +55,56 @@ bar += 'bar';
         Assert.True(engine.Evaluate("!iterator.hasOwnProperty(Symbol.iterator)").AsBoolean());
         Assert.True(engine.Evaluate("iterator[Symbol.iterator]() === iterator").AsBoolean());
     }
+
+    [Fact]
+    public void IndexOf()
+    {
+        var engine = new Engine();
+        Assert.Equal(0, engine.Evaluate("''.indexOf('', 0)"));
+        Assert.Equal(0, engine.Evaluate("''.indexOf('', 1)"));
+    }
+
+    [Fact]
+    public void TemplateLiteralsWithArrays()
+    {
+        var engine = new Engine();
+        engine.Execute("var a = [1,2,'three',true];");
+        Assert.Equal("test 1,2,three,true", engine.Evaluate("'test ' + a"));
+        Assert.Equal("test 1,2,three,true", engine.Evaluate("`test ${a}`"));
+    }
+
+    [Fact]
+    public void TemplateLiteralAsObjectKey()
+    {
+        var engine=new Engine();
+        var result = engine.Evaluate("({ [`key`]: 'value' })").AsObject();
+        Assert.True(result.HasOwnProperty("key"));
+        Assert.Equal("value", result["key"]);
+    }
+
+    [Fact]
+    public void ShouldCompareWithLocale()
+    {
+        var engine = new Engine();
+        Assert.Equal(1, engine.Evaluate("'王五'.localeCompare('张三')").AsInteger());
+        Assert.Equal(-1, engine.Evaluate("'王五'.localeCompare('张三', 'zh-CN')").AsInteger());
+    }
+
+    public static TheoryData<string, string> GetLithuaniaTestsData()
+    {
+        return new StringTetsLithuaniaData().TestData();
+    }
+
+    /// <summary>
+    /// Lithuanian case is special and Test262 suite tests cover only correct parsing by character. See:
+    /// https://github.com/tc39/test262/blob/main/test/intl402/String/prototype/toLocaleUpperCase/special_casing_Lithuanian.js
+    /// Added logic in the engine needs to parse full strings and not only spare characters. This is what these tests cover.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(GetLithuaniaTestsData))]
+    public void LithuanianToLocaleUpperCase(string parseStr, string result)
+    {
+        var value = _engine.Evaluate($"('{parseStr}').toLocaleUpperCase('lt')").AsString();
+        Assert.Equal(result, value);
+    }
 }

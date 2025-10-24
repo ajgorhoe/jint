@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -24,7 +23,7 @@ internal sealed class SetIteratorPrototype : IteratorPrototype
     {
         var properties = new PropertyDictionary(1, checkExistingKeys: false)
         {
-            [KnownKeys.Next] = new(new ClrFunctionInstance(Engine, "next", Next, 0, PropertyFlag.Configurable), true, false, true)
+            [KnownKeys.Next] = new(new ClrFunction(Engine, "next", Next, 0, PropertyFlag.Configurable), true, false, true)
         };
         SetProperties(properties);
 
@@ -35,13 +34,13 @@ internal sealed class SetIteratorPrototype : IteratorPrototype
         SetSymbols(symbols);
     }
 
-    internal IteratorInstance ConstructEntryIterator(SetInstance set)
+    internal IteratorInstance ConstructEntryIterator(JsSet set)
     {
         var instance = new SetEntryIterator(Engine, set);
         return instance;
     }
 
-    internal IteratorInstance ConstructValueIterator(SetInstance set)
+    internal IteratorInstance ConstructValueIterator(JsSet set)
     {
         var instance = new SetValueIterator(Engine, set._set._list);
         return instance;
@@ -49,10 +48,10 @@ internal sealed class SetIteratorPrototype : IteratorPrototype
 
     private sealed class SetEntryIterator : IteratorInstance
     {
-        private readonly SetInstance _set;
+        private readonly JsSet _set;
         private int _position;
 
-        public SetEntryIterator(Engine engine, SetInstance set) : base(engine)
+        public SetEntryIterator(Engine engine, JsSet set) : base(engine)
         {
             _prototype = engine.Realm.Intrinsics.SetIteratorPrototype;
             _set = set;
@@ -65,11 +64,11 @@ internal sealed class SetIteratorPrototype : IteratorPrototype
             {
                 var value = _set._set[_position];
                 _position++;
-                nextItem = new KeyValueIteratorPosition(_engine, value, value);
+                nextItem = IteratorResult.CreateKeyValueIteratorPosition(_engine, value, value);
                 return true;
             }
 
-            nextItem = KeyValueIteratorPosition.Done(_engine);
+            nextItem = IteratorResult.CreateKeyValueIteratorPosition(_engine);
             return false;
         }
     }
@@ -93,12 +92,12 @@ internal sealed class SetIteratorPrototype : IteratorPrototype
             {
                 var value = _values[_position];
                 _position++;
-                nextItem = new ValueIteratorPosition(_engine, value);
+                nextItem = IteratorResult.CreateValueIteratorPosition(_engine, value);
                 return true;
             }
 
             _closed = true;
-            nextItem = KeyValueIteratorPosition.Done(_engine);
+            nextItem = IteratorResult.CreateKeyValueIteratorPosition(_engine);
             return false;
         }
     }
